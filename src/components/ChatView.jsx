@@ -14,6 +14,14 @@ import {
 } from '../lib/wsAdapter.js'
 import { speak, stop as stopTts } from '../lib/ttsPlayer.js'
 
+// How close to the bottom counts as "following the conversation". Below this
+// distance a new message scrolls into view; above it the user is reading
+// history and must be left alone.
+const FOLLOW_THRESHOLD_PX = 120
+
+const prefersReducedMotion = () =>
+  window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+
 // ── Live clock hook ───────────────────────────────────────
 function useClock() {
   const [now, setNow] = useState(new Date())
@@ -50,7 +58,7 @@ export default function ChatView({ deviceId, onLogout }) {
     return localStorage.getItem('nandi_tts_enabled') !== 'false'
   })
 
-  const messagesEndRef = useRef(null)
+  const messagesAreaRef = useRef(null)
   const chatInputRef = useRef(null)
   const visionMgrRef = useRef(null)
   const dragCountRef = useRef(0)
@@ -126,13 +134,56 @@ export default function ChatView({ deviceId, onLogout }) {
   }, [])
 
   // ── Auto-scroll ────────────────────────────────────────
+  // Scrolls the container directly rather than calling scrollIntoView on a
+  // sentinel div. scrollIntoView walks up to whichever ancestor it decides is
+  // scrollable and, with `behavior: 'smooth'`, its animation is cancelled by the
+  // next React render — which for a streaming-ish chat is almost immediately.
+  // The net effect was that the view never moved and replies stayed below the
+  // fold.
+  //
+  // It also respects where the user is: if they have scrolled up to read
+  // history, new messages must not yank them back down.
+  //
+  // Whether the user has deliberately scrolled up is tracked by a
+  // real scroll event, NOT inferred from geometry at render time: a container
+  // measured while it has no usable height (first paint, hidden tab, a panel
+  // mid-transition) reports a huge distance-from-bottom, which reads as "the
+  // user scrolled away" and stops the chat following forever — with no way back
+  // except scrolling to the bottom by hand.
+  const userScrolledUpRef = useRef(false)
+
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const area = messagesAreaRef.current
+    if (!area) return
+
+    const onScroll = () => {
+      const distance = area.scrollHeight - area.clientHeight - area.scrollTop
+      userScrolledUpRef.current = distance > FOLLOW_THRESHOLD_PX
+    }
+    area.addEventListener('scroll', onScroll, { passive: true })
+    return () => area.removeEventListener('scroll', onScroll)
+  }, [])
+
+  useEffect(() => {
+    const area = messagesAreaRef.current
+    if (!area || userScrolledUpRef.current) return
+
+    // rAF so the new message is laid out before we scroll to it.
+    const id = requestAnimationFrame(() => {
+      area.scrollTo({
+        top: area.scrollHeight,
+        behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+      })
+    })
+    return () => cancelAnimationFrame(id)
   }, [messages])
 
   // ── Send handler ───────────────────────────────────────
   const handleSend = useCallback((text, attachments) => {
     if (!text && attachments.length === 0) return
+
+    // Sending is an explicit signal the user wants to see what comes back.
+    userScrolledUpRef.current = false
 
     setMessages(prev => [
       ...prev,
@@ -274,7 +325,7 @@ export default function ChatView({ deviceId, onLogout }) {
       <main className="chat-area">
         <Orb amplitude={orbAmplitude} />
 
-        <div className="messages-area">
+        <div className="messages-area" ref={messagesAreaRef}>
           <div className="messages-inner">
             {messages.length === 0 && (
               <div style={{
@@ -326,7 +377,6 @@ export default function ChatView({ deviceId, onLogout }) {
                 </span>
               </div>
             ))}
-            <div ref={messagesEndRef} />
           </div>
         </div>
 

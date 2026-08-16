@@ -440,13 +440,26 @@ body {
 
 .messages-area {
   flex: 1;
+  /* A flex item's min-height defaults to auto — "at least as tall as my
+     content" — so a scrolling region inside a column flex parent refuses to
+     shrink. min-height:0 is what lets flex:1 actually mean "take the leftover
+     space". */
+  min-height: 0;
   overflow-y: auto;
+
+  /* Deliberately a BLOCK, not a flex container.
+     This was `display:flex; flex-direction:column`, which made it both the
+     scroller and a flex container. The wrapper inside it was then a flex item:
+     it shrank to the container height, its content overflowed the item rather
+     than the scroller, and the maximum scrollTop came out as ~18px with 2300px
+     of messages. The chat could not be scrolled to the newest reply at all —
+     not by the auto-scroll effect, not by scrollIntoView, not by dragging the
+     scrollbar. Measured live before and after.
+     A plain block scroller with the flex layout moved to .messages-inner is the
+     boring arrangement that simply works. */
+  display: block;
   padding: 8px 24px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
   scroll-behavior: smooth;
-  align-items: stretch;
 }
 
 /* Inner wrapper used to constrain chat width like ChatGPT/Claude */
@@ -457,6 +470,18 @@ body {
   display: flex;
   flex-direction: column;
   gap: 18px;
+
+  /* Without this the chat cannot scroll at all.
+     .messages-area is BOTH a column flex container and the scroll container, so
+     this wrapper is a flex item and shrinks to the container's height by
+     default. Its content then overflows the ITEM rather than extending the
+     scroller, and .messages-area computes a maximum scrollTop of ~18px no
+     matter how many messages there are — measured live with 18 messages and
+     2354px of content. Replies simply sat below the fold, unreachable even by
+     dragging the scrollbar.
+     flex-shrink: 0 lets the wrapper take its natural content height, which is
+     what makes the parent genuinely scrollable. */
+  flex-shrink: 0;
 }
 
 .msg {
