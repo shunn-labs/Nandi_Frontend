@@ -2,11 +2,12 @@ import React, { useState, useEffect, useCallback } from 'react'
 import Login from './components/Login.jsx'
 import DeviceSetup from './components/DeviceSetup.jsx'
 import ChatView from './components/ChatView.jsx'
+import { getDeviceName } from './lib/clientId.js'
 
 function getDeviceId() {
-  // Check cookie for device_id
-  const match = document.cookie.match(/(?:^|;\s*)nandi_device_id=([^;]+)/)
-  return match ? decodeURIComponent(match[1]) : null
+  // Shared with clientId.js, which derives the client_id both sockets send.
+  const name = getDeviceName()
+  return name === 'unknown' ? null : name
 }
 
 function setDeviceIdCookie(id) {

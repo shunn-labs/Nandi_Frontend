@@ -10,6 +10,10 @@
 //   - URL rotation when a connection actually succeeded
 // ═══════════════════════════════════════════════════════════
 
+// client_id now comes from the shared helper, so the chat socket and this one
+// always agree on what to call this browser.
+import { getClientId } from './clientId.js'
+
 const VISION_CTRL_URLS = [
   'wss://api.shuun.site/ws/vision-control',
   'ws://localhost:8000/ws/vision-control',
@@ -26,12 +30,6 @@ function getToken() {
   return localStorage.getItem('user_token')
 }
 
-function getClientId() {
-  // client_id format: web_react_<deviceName>
-  const match = document.cookie.match(/(?:^|;\s*)nandi_device_id=([^;]+)/)
-  const device = match ? decodeURIComponent(match[1]) : 'unknown'
-  return `web_react_${device}`
-}
 
 export function getMyClientId() {
   return getClientId()

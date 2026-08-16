@@ -2,6 +2,10 @@
 //  wsAdapter.js  –  WebSocket chat + REST upload for Nandi
 // ═══════════════════════════════════════════════════════════
 
+// Shared with visionControl.js so both sockets identify this browser the same
+// way — see src/lib/clientId.js for why that matters to the planner.
+import { getClientId } from './clientId.js'
+
 const SERVERS = [
   'wss://api.shuun.site/ws/chat',
   'ws://localhost:8000/ws/chat',
@@ -17,7 +21,6 @@ const BASE_URLS = [
   'http://localhost:8000',
 ]
 
-const CLIENT_ID = 'nandi_web'
 
 let ws = null
 let isConnected = false
@@ -136,7 +139,7 @@ export async function ensureConnection() {
 export function sendMessage(text, attachments = []) {
   const payload = {
     query: text,
-    client_id: CLIENT_ID,
+    client_id: getClientId(),
     attachments,
   }
 
