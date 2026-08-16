@@ -1301,3 +1301,18 @@ body {
 
   .app-header__center { display: none; }
 }
+
+/* Login status + error messages. The login page previously had no way to
+   report that Google sign-in failed to load, so a failure was a blank screen. */
+.login-page__hint {
+  margin-top: 18px;
+  font-size: 0.82rem;
+  color: var(--text-muted, #8a94a6);
+  max-width: 34ch;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.login-page__hint--error {
+  color: #ff8a8a;
+}

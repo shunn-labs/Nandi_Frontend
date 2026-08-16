@@ -5,29 +5,24 @@
 // Shared with visionControl.js so both sockets identify this browser the same
 // way — see src/lib/clientId.js for why that matters to the planner.
 import { getClientId } from './clientId.js'
+import { API_BASE, CHAT_WS, HEALTH_URL } from './endpoints.js'
 
-const SERVERS = [
-  'wss://api.shuun.site/ws/chat',
-  'ws://localhost:8000/ws/chat',
-]
+// Close codes the server uses to reject a connection outright. Reconnecting
+// after one of these is pointless — the token will still be invalid — and the
+// old code did exactly that, producing an endless 4-second reconnect storm
+// against the server for any user whose token had expired.
+const FATAL_CLOSE_CODES = new Set([1008, 4401, 4403])
 
-const HEALTH_URLS = [
-  'https://api.shuun.site/health',
-  'http://localhost:8000/health',
-]
-
-const BASE_URLS = [
-  'https://api.shuun.site',
-  'http://localhost:8000',
-]
-
+const MAX_RECONNECT_DELAY = 30000
 
 let ws = null
 let isConnected = false
 let pendingQueue = []
-let activeServerIndex = 0
 let messageCallback = null
 let connectionCallback = null
+let authFailureCallback = null
+let reconnectAttempt = 0
+let stopped = false
 
 // ── Helpers ───────────────────────────────────────────────
 
@@ -35,18 +30,32 @@ function getToken() {
   return localStorage.getItem('user_token')
 }
 
-async function pickHealthyServer() {
-  for (let i = 0; i < HEALTH_URLS.length; i++) {
-    try {
-      const res = await fetch(HEALTH_URLS[i], { signal: AbortSignal.timeout(3000) })
-      if (res.ok) return i
-    } catch { /* skip */ }
+export async function isServerHealthy() {
+  try {
+    const res = await fetch(HEALTH_URL, { signal: AbortSignal.timeout(3000) })
+    return res.ok
+  } catch {
+    return false
   }
-  return 0
 }
 
 export function getBaseUrl() {
-  return BASE_URLS[activeServerIndex]
+  return API_BASE
+}
+
+/**
+ * API base for callers that run before any socket exists (i.e. Login).
+ *
+ * The login page used to hardcode https://api.shuun.site, so signing in
+ * against a local backend was impossible.
+ */
+export async function getApiBaseUrl() {
+  return API_BASE
+}
+
+/** Called when the server rejects our token, so the UI can send the user to login. */
+export function onAuthFailure(cb) {
+  authFailureCallback = cb
 }
 
 export function getConnectionState() {
@@ -68,70 +77,104 @@ function setConnected(val) {
   if (connectionCallback) connectionCallback(val)
 }
 
-function connectWS(serverIndex) {
+function handleAuthFailure(reason) {
+  console.warn(`[ws] authentication rejected: ${reason}`)
+  stopped = true                       // do not reconnect — the token is bad
+  setConnected(false)
+  pendingQueue = []                    // never replay queued messages post-logout
+  if (authFailureCallback) authFailureCallback(reason)
+}
+
+function connectWS() {
   if (ws) {
     try { ws.close() } catch {}
     ws = null
     setConnected(false)
   }
 
-  const url = SERVERS[serverIndex]
-  console.log(`[ws] connecting → ${url}`)
-  ws = new WebSocket(url)
+  const token = getToken()
+  if (!token) {
+    handleAuthFailure('no token stored')
+    return
+  }
 
-  ws.onopen = () => {
-    activeServerIndex = serverIndex
-    console.log(`[ws] connected`)
+  console.log(`[ws] connecting → ${CHAT_WS}`)
+  ws = new WebSocket(CHAT_WS)
+  const sock = ws
 
-    const token = getToken()
-    if (token) {
-      ws.send(JSON.stringify({ type: 'auth', token }))
-    }
+  sock.onopen = () => {
+    if (ws !== sock) return
+    console.log('[ws] connected')
+    sock.send(JSON.stringify({ type: 'auth', token }))
 
     // Flush queued messages after brief auth delay
     setTimeout(() => {
-      for (const item of pendingQueue) ws.send(JSON.stringify(item))
+      if (ws !== sock || sock.readyState !== WebSocket.OPEN) return
+      for (const item of pendingQueue) sock.send(JSON.stringify(item))
       pendingQueue = []
     }, 120)
   }
 
-  ws.onmessage = (event) => {
+  sock.onmessage = (event) => {
+    if (ws !== sock) return
     let data
     try { data = JSON.parse(event.data) } catch { return }
 
     if (data.status === 'authenticated') {
       console.log('[ws] authenticated')
+      reconnectAttempt = 0             // a real success resets the backoff
       setConnected(true)
       return
     }
 
+    // Re-sending the SAME token that was just rejected is what the previous
+    // version did, forever. If the server says the token is bad, it is bad.
     if (data.error === 'Invalid or expired token' || data.error === 'Not authenticated') {
-      console.warn('[ws] token issue, re-sending auth')
-      const token = getToken()
-      if (token) ws.send(JSON.stringify({ type: 'auth', token }))
+      handleAuthFailure(data.error)
+      try { sock.close() } catch {}
       return
     }
 
-    // Normalise response field
     const responseText = data.response || data.conversation_output || ''
-    const normalised = { ...data, response_text: responseText }
-
-    if (messageCallback) messageCallback(normalised)
+    if (messageCallback) messageCallback({ ...data, response_text: responseText })
   }
 
-  ws.onerror = () => setConnected(false)
+  sock.onerror = () => {
+    if (ws === sock) setConnected(false)
+  }
 
-  ws.onclose = () => {
+  sock.onclose = (event) => {
+    if (ws !== sock) return
     setConnected(false)
-    console.log('[ws] closed, reconnecting in 4s')
-    setTimeout(() => ensureConnection(), 4000)
+
+    // The server closes with 1008 when it rejects the auth frame. Retrying
+    // cannot succeed, and the old unconditional 4s retry meant one expired
+    // token produced an indefinite reconnect storm against the server.
+    if (FATAL_CLOSE_CODES.has(event.code)) {
+      handleAuthFailure(`server closed with ${event.code}`)
+      return
+    }
+    if (stopped) return
+
+    // Exponential backoff with jitter, rather than a fixed 4s hammer.
+    reconnectAttempt += 1
+    const base = Math.min(1000 * 2 ** (reconnectAttempt - 1), MAX_RECONNECT_DELAY)
+    const delay = Math.round(base * (0.7 + Math.random() * 0.6))
+    console.log(`[ws] closed (${event.code}), reconnecting in ${(delay / 1000).toFixed(1)}s`)
+    setTimeout(() => ensureConnection(), delay)
   }
 }
 
 export async function ensureConnection() {
-  if (ws && ws.readyState === WebSocket.OPEN) return
-  const idx = await pickHealthyServer()
-  connectWS(idx)
+  if (stopped) return
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return
+  connectWS()
+}
+
+/** Clear the stop flag after a fresh login so the socket can come back up. */
+export function resetConnection() {
+  stopped = false
+  reconnectAttempt = 0
 }
 
 // ── Send a chat message ──────────────────────────────────
@@ -157,12 +200,7 @@ export async function uploadFile(file) {
   const token = getToken()
   if (!token) throw new Error('Not authenticated')
 
-  if (!isConnected) {
-    const idx = await pickHealthyServer()
-    activeServerIndex = idx
-  }
-
-  const baseUrl = BASE_URLS[activeServerIndex]
+  const baseUrl = API_BASE
   const form = new FormData()
   form.append('file', file)
 
@@ -188,9 +226,12 @@ export async function uploadFile(file) {
 // ── Disconnect ───────────────────────────────────────────
 
 export function disconnect() {
+  stopped = true
   if (ws) {
-    try { ws.close() } catch {}
-    ws = null
+    const sock = ws
+    ws = null                 // mark superseded so handlers no-op
+    try { sock.close() } catch {}
   }
+  pendingQueue = []
   setConnected(false)
 }

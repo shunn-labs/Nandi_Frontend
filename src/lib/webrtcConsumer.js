@@ -9,15 +9,25 @@
 //            plus mid-stream camera switching (front ↔ back)
 // ═══════════════════════════════════════════════════════════
 
+// Default follows the build mode instead of always being production — a dev
+// build used to open WebRTC signaling against the live vision server.
+import { getVisionSignalUrl } from './endpoints.js'
+
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
 ]
 
 function getSignalUrl() {
-  const override = localStorage.getItem('nandi_vision_signal_url')
-  if (override) return override
-  return 'wss://vision.shuun.site/ws/signal'
+  return getVisionSignalUrl()
+}
+
+// The vision server authenticates every signaling registration and scopes each
+// stream to its owner, so both the consumer and the producer must present the
+// same JWT the chat socket uses. Without it, register is refused with 4401 and
+// no video ever flows.
+function getToken() {
+  return localStorage.getItem('user_token')
 }
 
 // ════════════════════════ CONSUMER ════════════════════════
@@ -161,6 +171,7 @@ export function startConsumer(streamId, callbacks = {}) {
     ws.onopen = () => {
       ws.send(JSON.stringify({
         type: 'register', role: 'consumer', stream_id: streamId,
+        token: getToken(),
       }))
     }
 
@@ -394,6 +405,7 @@ export async function startProducer({
   ws.onopen = () => {
     ws.send(JSON.stringify({
       type: 'register', role: 'producer', stream_id: streamId,
+      token: getToken(),
     }))
     log(`Registered as producer ${streamId}`, 'ok')
   }

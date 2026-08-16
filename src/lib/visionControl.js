@@ -13,18 +13,19 @@
 // client_id now comes from the shared helper, so the chat socket and this one
 // always agree on what to call this browser.
 import { getClientId } from './clientId.js'
+import { VISION_CONTROL_WS } from './endpoints.js'
 
-const VISION_CTRL_URLS = [
-  'wss://api.shuun.site/ws/vision-control',
-  'ws://localhost:8000/ws/vision-control',
-]
+
+// Close codes meaning "your token is not acceptable". Retrying is pointless.
+const FATAL_CLOSE_CODES = new Set([1008, 4401, 4403])
+const MAX_RECONNECT_DELAY = 30000
 
 let ws = null
 let connected = false
-let everConnected = false        // did we ever successfully register?
 let commandHandler = null
-let activeUrlIndex = 0
 let reconnectTimer = null
+let reconnectAttempt = 0
+let stopped = false
 
 function getToken() {
   return localStorage.getItem('user_token')
@@ -41,11 +42,14 @@ export function onVisionCommand(handler) {
 }
 
 function scheduleReconnect() {
-  if (reconnectTimer) return
+  if (reconnectTimer || stopped) return
+  reconnectAttempt += 1
+  const base = Math.min(1000 * 2 ** (reconnectAttempt - 1), MAX_RECONNECT_DELAY)
+  const delay = Math.round(base * (0.7 + Math.random() * 0.6))
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null
     connect()
-  }, 4000)
+  }, delay)
 }
 
 // ── Connect with auto-retry on alternate URLs ──────────────
@@ -60,9 +64,15 @@ function connect() {
     reconnectTimer = null
   }
 
-  const url = VISION_CTRL_URLS[activeUrlIndex]
+  const url = VISION_CONTROL_WS
   const clientId = getClientId()
   const token = getToken()
+
+  if (!token) {
+    console.warn('[vision-ctrl] no token — not connecting')
+    stopped = true
+    return
+  }
 
   console.log(`[vision-ctrl] connecting → ${url} as ${clientId}`)
 
@@ -71,7 +81,6 @@ function connect() {
     sock = new WebSocket(url)
   } catch (err) {
     console.error('[vision-ctrl] WebSocket creation failed:', err)
-    activeUrlIndex = (activeUrlIndex + 1) % VISION_CTRL_URLS.length
     scheduleReconnect()
     return
   }
@@ -94,13 +103,16 @@ function connect() {
 
     if (msg.type === 'registered') {
       connected = true
-      everConnected = true
+      reconnectAttempt = 0
       console.log(`[vision-ctrl] registered as ${msg.client_id}`)
       return
     }
 
     if (msg.error) {
-      console.warn('[vision-ctrl] error:', msg.error)
+      // The server now rejects bad tokens and client_ids owned by someone
+      // else. Neither is fixable by reconnecting, so stop instead of looping.
+      console.warn('[vision-ctrl] registration refused:', msg.error)
+      stopped = true
       return
     }
 
@@ -118,15 +130,16 @@ function connect() {
     // Don't log the noisy Event object; onclose handles retry.
   }
 
-  sock.onclose = () => {
+  sock.onclose = (event) => {
     if (ws !== sock) return   // a newer socket already took over — ignore
     connected = false
-    console.warn('[vision-ctrl] closed, will retry')
-    // Only rotate to the alternate URL if we never managed to connect on this
-    // one. Once we've connected successfully, keep using the working URL.
-    if (!everConnected) {
-      activeUrlIndex = (activeUrlIndex + 1) % VISION_CTRL_URLS.length
+    if (FATAL_CLOSE_CODES.has(event.code)) {
+      console.warn(`[vision-ctrl] rejected (${event.code}) — not retrying`)
+      stopped = true
+      return
     }
+    if (stopped) return
+    console.warn(`[vision-ctrl] closed (${event.code}), will retry`)
     scheduleReconnect()
   }
 }
@@ -137,6 +150,8 @@ export function startVisionControl() {
   if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
     return
   }
+  stopped = false
+  reconnectAttempt = 0
   connect()
 }
 
@@ -145,6 +160,11 @@ export function isVisionControlConnected() {
 }
 
 export function disconnect() {
+  stopped = true
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
   if (ws) {
     const sock = ws
     ws = null            // mark superseded so handlers no-op

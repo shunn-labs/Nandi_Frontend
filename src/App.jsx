@@ -3,6 +3,7 @@ import Login from './components/Login.jsx'
 import DeviceSetup from './components/DeviceSetup.jsx'
 import ChatView from './components/ChatView.jsx'
 import { getDeviceName } from './lib/clientId.js'
+import { disconnect, resetConnection } from './lib/wsAdapter.js'
 
 function getDeviceId() {
   // Shared with clientId.js, which derives the client_id both sockets send.
@@ -31,11 +32,15 @@ export default function App() {
   }, [])
 
   const handleLogin = useCallback(() => {
+    // Clear the "stop reconnecting" flag set by a previous auth failure,
+    // otherwise the socket stays permanently down after re-login.
+    resetConnection()
     setIsLoggedIn(true)
   }, [])
 
   const handleLogout = useCallback(() => {
     localStorage.removeItem('user_token')
+    disconnect()
     setIsLoggedIn(false)
   }, [])
 

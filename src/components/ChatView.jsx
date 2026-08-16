@@ -7,6 +7,7 @@ import SettingsPanel from './SettingsPanel.jsx'
 import { IconSettings, IconLogs } from './Icons.jsx'
 import {
   ensureConnection,
+  onAuthFailure,
   onConnectionChange,
   onMessage,
   sendMessage,
@@ -61,9 +62,32 @@ export default function ChatView({ deviceId, onLogout }) {
   useEffect(() => {
     onConnectionChange((val) => setConnected(val))
 
+    // An expired or invalid token used to produce an endless reconnect loop,
+    // with the UI stuck on "Offline" and no explanation. Send the user back to
+    // login instead.
+    onAuthFailure(() => {
+      localStorage.removeItem('user_token')
+      onLogout()
+    })
+
     onMessage((data) => {
       const text = data.response_text
-      if (!text) return
+
+      // An error frame has no response text. The placeholder used to stay on
+      // screen as a permanent "Thinking…" because only a successful reply
+      // replaced it.
+      if (!text) {
+        if (data.error) {
+          setMessages(prev => {
+            const last = prev[prev.length - 1]
+            const errMsg = { role: 'ai', text: data.error, ts: Date.now(), isError: true }
+            return (last && last.role === 'ai' && last.thinking)
+              ? [...prev.slice(0, -1), errMsg]
+              : [...prev, errMsg]
+          })
+        }
+        return
+      }
 
       setMessages(prev => {
         const last = prev[prev.length - 1]
@@ -83,7 +107,7 @@ export default function ChatView({ deviceId, onLogout }) {
     })
 
     ensureConnection()
-  }, [])
+  }, [onLogout])
 
   // ── Keyboard shortcuts ──────────────────────────────────
   useEffect(() => {
@@ -278,6 +302,8 @@ export default function ChatView({ deviceId, onLogout }) {
                     <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>
                       Thinking…
                     </span>
+                  ) : msg.isError ? (
+                    <span style={{ color: '#ff8a8a' }}>{msg.text}</span>
                   ) : (
                     msg.text
                   )}
