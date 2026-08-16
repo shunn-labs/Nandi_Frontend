@@ -1,23 +1,19 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { LOGS_WS } from '../lib/endpoints.js'
 
-const LOG_SERVERS = [
-  'wss://api.shuun.site/ws/logs',
-  'ws://localhost:8000/ws/logs',
-]
+// This panel used to carry its own hardcoded server list, headed by production,
+// and pick between them with a health probe. That bypassed endpoints.js
+// entirely, so a dev build streamed the LIVE server's logs — the same
+// dev-reaches-production problem the chat socket had, and a leak of one
+// environment's activity into another. The target now comes from the build mode
+// like every other connection.
 
-const HEALTH_URLS = [
-  'https://api.shuun.site/health',
-  'http://localhost:8000/health',
-]
+const RECONNECT_BASE_MS = 2000
+const RECONNECT_MAX_MS = 30000
 
-async function pickHealthyServer() {
-  for (let i = 0; i < HEALTH_URLS.length; i++) {
-    try {
-      const res = await fetch(HEALTH_URLS[i], { signal: AbortSignal.timeout(3000) })
-      if (res.ok) return i
-    } catch { /* skip */ }
-  }
-  return 0
+function backoffDelay(attempt) {
+  const base = Math.min(RECONNECT_BASE_MS * 2 ** Math.max(0, attempt), RECONNECT_MAX_MS)
+  return base * (0.75 + Math.random() * 0.5)   // jitter, so tabs don't sync up
 }
 
 function getToken() {
@@ -41,32 +37,45 @@ export default function LogPanel() {
 
   useEffect(() => {
     let cancelled = false
+    let attempt = 0
+    let retryTimer = null
 
-    async function connect() {
-      const idx = await pickHealthyServer()
+    function connect() {
       if (cancelled) return
 
-      const url = LOG_SERVERS[idx]
-
       if (wsRef.current) {
-        try { wsRef.current.close() } catch {}
+        // Detach handlers before closing. Otherwise the outgoing socket's
+        // onclose fires and schedules a reconnect that races the one we are
+        // opening right now — the same storm the chat socket suffered.
+        const old = wsRef.current
+        old.onopen = old.onmessage = old.onerror = old.onclose = null
+        try { old.close() } catch {}
       }
 
-      const ws = new WebSocket(url)
+      const ws = new WebSocket(LOGS_WS)
       wsRef.current = ws
 
+      const isStale = () => cancelled || wsRef.current !== ws
+
       ws.onopen = () => {
-        if (cancelled) return
+        if (isStale()) return
         const token = getToken()
-        if (token) ws.send(JSON.stringify({ type: 'auth', token }))
+        if (!token) {
+          // The server closes an unauthenticated log socket with 1008, and we
+          // have nothing better to send. Don't spin.
+          try { ws.close() } catch {}
+          return
+        }
+        ws.send(JSON.stringify({ type: 'auth', token }))
       }
 
       ws.onmessage = (event) => {
-        if (cancelled) return
+        if (isStale()) return
         let data
         try { data = JSON.parse(event.data) } catch { return }
 
         if (data.status === 'authenticated') {
+          attempt = 0            // reset backoff only on a confirmed success
           setConnected(true)
           return
         }
@@ -84,18 +93,38 @@ export default function LogPanel() {
         }])
       }
 
-      ws.onerror = () => setConnected(false)
-      ws.onclose = () => {
-        if (cancelled) return
+      ws.onerror = () => {
+        if (isStale()) return
         setConnected(false)
-        setTimeout(() => { if (!cancelled) connect() }, 4000)
+      }
+
+      ws.onclose = (event) => {
+        if (isStale()) return
+        setConnected(false)
+
+        // 1008 is the server rejecting our auth frame. Reconnecting with the
+        // same token just repeats the rejection forever; the chat socket's
+        // auth-failure path is what sends the user back to login.
+        if (event && event.code === 1008) return
+
+        if (retryTimer) return
+        retryTimer = setTimeout(() => {
+          retryTimer = null
+          connect()
+        }, backoffDelay(attempt++))
       }
     }
 
     connect()
     return () => {
       cancelled = true
-      if (wsRef.current) try { wsRef.current.close() } catch {}
+      if (retryTimer) clearTimeout(retryTimer)
+      const sock = wsRef.current
+      if (sock) {
+        sock.onopen = sock.onmessage = sock.onerror = sock.onclose = null
+        try { sock.close() } catch {}
+      }
+      wsRef.current = null
     }
   }, [])
 
