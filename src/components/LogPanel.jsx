@@ -74,13 +74,13 @@ export default function LogPanel() {
         let data
         try { data = JSON.parse(event.data) } catch { return }
 
-        if (data.status === 'authenticated') {
+        if (data.type === 'authenticated') {
           attempt = 0            // reset backoff only on a confirmed success
           setConnected(true)
           return
         }
 
-        if (data.error) return
+        if (data.type === 'error') return
 
         const msg = data.log || data.message || JSON.stringify(data)
         const ts = new Date().toLocaleTimeString('en-GB', { hour12: false })

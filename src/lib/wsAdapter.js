@@ -120,18 +120,27 @@ function connectWS() {
     let data
     try { data = JSON.parse(event.data) } catch { return }
 
-    if (data.status === 'authenticated') {
+    if (data.type === 'authenticated') {
       console.log('[ws] authenticated')
       reconnectAttempt = 0             // a real success resets the backoff
       setConnected(true)
       return
     }
 
-    // Re-sending the SAME token that was just rejected is what the previous
-    // version did, forever. If the server says the token is bad, it is bad.
-    if (data.error === 'Invalid or expired token' || data.error === 'Not authenticated') {
-      handleAuthFailure(data.error)
-      try { sock.close() } catch {}
+    // Turn-level errors arrive as {type: 'error', code, message} and do not
+    // close the socket — the server keeps the connection open so one bad turn
+    // doesn't force a reconnect. Only an auth-code error means the token
+    // itself is bad; other codes (invalid_request, internal_error, ...) are
+    // just forwarded to the UI below.
+    if (data.type === 'error') {
+      if (data.code === 'unauthenticated' || data.code === 'forbidden') {
+        handleAuthFailure(data.message)
+        try { sock.close() } catch {}
+        return
+      }
+      if (messageCallback) {
+        messageCallback({ ...data, response_text: '', error: data.message })
+      }
       return
     }
 
@@ -204,7 +213,7 @@ export async function uploadFile(file) {
   const form = new FormData()
   form.append('file', file)
 
-  const res = await fetch(`${baseUrl}/api/upload`, {
+  const res = await fetch(`${baseUrl}/api/files`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
     body: form,
@@ -220,6 +229,7 @@ export async function uploadFile(file) {
     file_id: json.file_id,
     filename: json.filename,
     content_type: json.content_type,
+    file_size_bytes: json.size_bytes,
   }
 }
 

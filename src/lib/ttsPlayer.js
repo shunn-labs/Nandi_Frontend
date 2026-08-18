@@ -49,7 +49,7 @@ export async function speak(text, onVolume, onEnd) {
   const baseUrl = getBaseUrl()
 
   try {
-    const res = await fetch(`${baseUrl}/api/tts`, {
+    const res = await fetch(`${baseUrl}/api/voice/speak`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

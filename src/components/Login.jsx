@@ -28,7 +28,7 @@ export default function Login({ onLogin }) {
       setError('')
       try {
         const base = await getApiBaseUrl()
-        const res = await fetch(`${base}/auth/google-login`, {
+        const res = await fetch(`${base}/auth/google`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ credential: response.credential }),

@@ -35,7 +35,12 @@ const Attachment = forwardRef(function Attachment({ onChange }, ref) {
     if (!onChange) return
     const ready = items
       .filter(f => f.status === 'done')
-      .map(({ file_id, filename, content_type, size }) => ({ file_id, filename, content_type, size }))
+      .map(({ file_id, filename, content_type, file_size_bytes }) => ({
+        file_id,
+        filename,
+        content_type,
+        file_size_bytes,
+      }))
     const uploading = items.some(f => f.status === 'uploading')
     onChange(ready, uploading)
   }, [items, onChange])
@@ -64,7 +69,9 @@ const Attachment = forwardRef(function Attachment({ onChange }, ref) {
       const result = await uploadFile(file)
       clearInterval(timer)
       setItems(prev => prev.map(f =>
-        f.id === id ? { ...f, status: 'done', progress: 100, file_id: result.file_id } : f
+        f.id === id
+          ? { ...f, status: 'done', progress: 100, file_id: result.file_id, file_size_bytes: result.file_size_bytes }
+          : f
       ))
     } catch (err) {
       clearInterval(timer)

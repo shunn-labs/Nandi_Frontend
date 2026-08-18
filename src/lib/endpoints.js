@@ -36,7 +36,9 @@ export const API_BASE =
 export const WS_BASE = API_BASE.replace(/^http/, 'ws')
 
 export const CHAT_WS = `${WS_BASE}/ws/chat`
-export const VISION_CONTROL_WS = `${WS_BASE}/ws/vision-control`
+// Not under /ws/ — the brain server mounts this router at /api/vision, and
+// nginx's /ws/ location block does not proxy it.
+export const VISION_CONTROL_WS = `${WS_BASE}/api/vision/control`
 export const LOGS_WS = `${WS_BASE}/ws/logs`
 export const HEALTH_URL = `${API_BASE}/health`
 

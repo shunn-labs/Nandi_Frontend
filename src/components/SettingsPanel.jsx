@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import { API_BASE } from '../lib/endpoints.js'
 
 function getDeviceId() {
   const match = document.cookie.match(/(?:^|;\s*)nandi_device_id=([^;]+)/)
@@ -83,7 +84,7 @@ export default function SettingsPanel({ onClose, onLogout }) {
             <div className="settings-section__label">Connection</div>
             <div className="settings-row">
               <span className="settings-row__label">Backend</span>
-              <span className="settings-row__value">api.shuun.site</span>
+              <span className="settings-row__value">{API_BASE.replace(/^https?:\/\//, '')}</span>
             </div>
           </div>
         </div>

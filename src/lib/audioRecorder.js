@@ -162,7 +162,7 @@ async function transcribe(blob) {
   const form = new FormData()
   form.append('audio', blob, 'recording.webm')
 
-  const res = await fetch(`${baseUrl}/api/stt`, {
+  const res = await fetch(`${baseUrl}/api/voice/transcribe`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
     body: form,
