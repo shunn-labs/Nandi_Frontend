@@ -164,6 +164,12 @@ body {
   overflow: hidden;
 }
 
+/* "Show activity logs" off. Collapsing the track rather than removing it keeps
+   the chat and vision columns on their existing grid lines. */
+.app-layout--no-logs {
+  grid-template-columns: 0 1fr 400px;
+}
+
 /* ──────────────────────── HEADER ──────────────────────── */
 
 .app-header {
@@ -181,7 +187,10 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
-  flex-shrink: 0;
+  /* Equal flex basis on left and right keeps the clock optically centred
+     without taking it out of flow. */
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .app-header__logo {
@@ -220,14 +229,19 @@ body {
 
 /* ── Header center: clock ── */
 
+/* Was `position: absolute; left: 50%`. The header is not a positioned
+   ancestor, so the clock was placed against the viewport rather than the
+   header, and being out of flow it sat ON TOP of the brand/status on the left
+   and the Logs/Vision/Settings buttons on the right at every width between
+   481px and ~1100px. It is now a normal flex child, so the three sections can
+   never overlap. */
 .app-header__center {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 1px;
+  flex: 0 0 auto;
+  padding: 0 12px;
 }
 
 .app-header__time {
@@ -249,12 +263,18 @@ body {
 .app-header__right {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 10px;
-  flex-shrink: 0;
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .app-header__toggle-logs {
   display: none; /* shown on mobile */
+  align-items: center;
+  /* Replaces the inline marginLeft the Logs label used to carry, now that the
+     label is a class the phone breakpoint can hide. */
+  gap: 6px;
   background: none;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -263,11 +283,17 @@ body {
   font-size: 0.85rem;
   font-family: var(--font-body);
   cursor: pointer;
+  /* Without this the Vision button wrapped its label under its icon and grew
+     to 51px in a 56px header, sitting taller than the buttons beside it. */
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .app-header__toggle-logs:hover { border-color: var(--cyan-dim); color: var(--cyan); }
 
 .app-header__settings-btn {
+  white-space: nowrap;
+  flex-shrink: 0;
   background: none;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -538,6 +564,97 @@ body {
   border-bottom-left-radius: 4px;
   color: var(--text-primary);
 }
+
+/* ── Markdown inside assistant bubbles ──────────────────────
+   The bubble sets `white-space: pre-wrap` so that plain replies keep their
+   newlines. Once markdown produces real block elements that would double every
+   gap, so it is reset here and the blocks carry their own spacing. */
+.md { white-space: normal; }
+
+.md > *:first-child { margin-top: 0; }
+.md > *:last-child  { margin-bottom: 0; }
+
+.md p { margin: 0 0 0.7em; }
+
+.md h1, .md h2, .md h3, .md h4 {
+  margin: 1em 0 0.5em;
+  line-height: 1.3;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+.md h1 { font-size: 1.25rem; }
+.md h2 { font-size: 1.13rem; }
+.md h3 { font-size: 1.04rem; }
+.md h4 { font-size: 0.97rem; }
+
+.md ul, .md ol { margin: 0 0 0.7em; padding-left: 1.4em; }
+.md li { margin: 0.2em 0; }
+.md li > p { margin: 0; }
+
+.md strong { font-weight: 680; color: #fff; }
+.md em { font-style: italic; }
+.md del { opacity: 0.6; }
+
+.md a { color: var(--cyan); text-decoration: underline; text-underline-offset: 2px; }
+.md a:hover { color: #fff; }
+
+/* Inline code. A fenced block is wrapped in <pre>, which overrides this. */
+.md code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: rgba(0, 212, 255, 0.09);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.1em 0.36em;
+  word-break: break-word;
+}
+
+.md pre {
+  margin: 0 0 0.7em;
+  padding: 12px 14px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+}
+
+.md pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.85em;
+  line-height: 1.55;
+  white-space: pre;
+  word-break: normal;
+}
+
+.md blockquote {
+  margin: 0 0 0.7em;
+  padding: 0.1em 0 0.1em 0.9em;
+  border-left: 3px solid var(--cyan-dim);
+  color: var(--text-secondary);
+}
+
+.md hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
+
+/* GFM tables. They can easily exceed a bubble, so the wrapper scrolls. */
+.md table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0 0 0.7em;
+  font-size: 0.9em;
+}
+.md th, .md td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+}
+.md th { background: rgba(0, 212, 255, 0.07); font-weight: 650; }
+
+.md input[type="checkbox"] { margin-right: 0.45em; }
 
 .msg__meta {
   font-size: 0.72rem;
@@ -959,7 +1076,8 @@ body {
 }
 
 .vbox__dot--live       { background: var(--green); box-shadow: 0 0 6px var(--green); }
-.vbox__dot--connecting { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+.vbox__dot--connecting,
+.vbox__dot--waiting    { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
 .vbox__dot--offline,
 .vbox__dot--failed     { background: var(--red);   box-shadow: 0 0 6px var(--red); }
 
@@ -1323,9 +1441,101 @@ body {
 
   .msg__bubble { font-size: 0.95rem; padding: 12px 14px; }
   .orb-canvas { width: 90px; height: 90px; }
-
-  .app-header__center { display: none; }
 }
+
+/* The clock needs roughly 110px between two sections that together already
+   want ~540px. Below this it was hidden only under 480px, which is why it
+   collided through the whole tablet range. */
+@media (max-width: 760px) {
+  .app-header__center { display: none; }
+
+  /* The equal `flex: 1 1 0` on left and right exists only to keep the clock
+     optically centred. Once the clock is hidden it does harm: the left column
+     still claims half the header for a logo and a status dot, squeezing the
+     right column below its content width and pushing Settings off-screen
+     entirely at phone widths. With the clock gone, let each side take what it
+     actually needs and give the buttons priority. */
+  .app-header__left  { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+  .app-header__right { flex: 0 0 auto; }
+}
+
+/* Phones: drop the button labels and keep the icons. Three labelled buttons
+   want ~292px, which does not fit a 375px header alongside the logo and status
+   — Settings was rendered past the right edge and unreachable. */
+@media (max-width: 480px) {
+  .app-header__btn-label { display: none; }
+
+  .app-header__toggle-logs,
+  .app-header__settings-btn {
+    padding: 7px 9px;
+    gap: 0;
+  }
+}
+
+/* Logs + Vision + Settings need ~274px. Below this there is not enough left
+   for them beside the logo, the wordmark and the status, and the buttons no
+   longer fit on one line. The wordmark is the one piece the logo beside it
+   already conveys, so it goes first. */
+@media (max-width: 620px) {
+  .app-header__brand { display: none; }
+}
+
+/* Inline camera failure notice in the vision column. */
+.vmgr__error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 10px 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 138, 138, 0.35);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 138, 138, 0.08);
+  color: #ff8a8a;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.vmgr__error-dismiss {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+
+.vmgr__error-dismiss:hover { opacity: 1; }
+
+/* Inline mic / STT failure notice above the input bar. */
+.chat-input-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border: 1px solid rgba(255, 138, 138, 0.35);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 138, 138, 0.08);
+  color: #ff8a8a;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.chat-input-error__dismiss {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 0 2px;
+}
+
+.chat-input-error__dismiss:hover { opacity: 1; }
 
 /* Login status + error messages. The login page previously had no way to
    report that Google sign-in failed to load, so a failure was a blank screen. */

@@ -43,6 +43,17 @@ export default function LogPanel() {
     function connect() {
       if (cancelled) return
 
+      // Checked BEFORE opening the socket, not in onopen. Closing from inside
+      // onopen produces a close event with code 1005, which is not the 1008
+      // the reconnect guard below looks for — so every signed-out tab opened a
+      // socket, closed it, and scheduled another, forever. Now there is simply
+      // no socket until there is a token.
+      if (!getToken()) {
+        console.warn('[logs] no token — not connecting')
+        setConnected(false)
+        return
+      }
+
       if (wsRef.current) {
         // Detach handlers before closing. Otherwise the outgoing socket's
         // onclose fires and schedules a reconnect that races the one we are
@@ -61,8 +72,7 @@ export default function LogPanel() {
         if (isStale()) return
         const token = getToken()
         if (!token) {
-          // The server closes an unauthenticated log socket with 1008, and we
-          // have nothing better to send. Don't spin.
+          // Signed out between connect() and onopen.
           try { ws.close() } catch {}
           return
         }

@@ -30,6 +30,10 @@ const VisionManager = forwardRef(function VisionManager({ onCaptureToChat }, ref
   const [boxes, setBoxes] = useState([])
   const [ctrlConnected, setCtrlConnected] = useState(false)
   const [manualStreamId, setManualStreamId] = useState('')
+  // Reported inline in this column. It used to be a native alert(), which
+  // blocks the whole page behind a browser-chrome dialog for what is a routine,
+  // recoverable condition (permission not granted yet, no camera attached).
+  const [cameraError, setCameraError] = useState('')
   const cameraProducerRef = useRef(null)
   const [cameraOn, setCameraOn] = useState(false)
 
@@ -135,6 +139,7 @@ const VisionManager = forwardRef(function VisionManager({ onCaptureToChat }, ref
   const startCameraProducer = useCallback(async () => {
     if (cameraProducerRef.current) return
 
+    setCameraError('')
     const clientId = getMyClientId()
     const streamId = `${clientId}_camera`
 
@@ -161,7 +166,18 @@ const VisionManager = forwardRef(function VisionManager({ onCaptureToChat }, ref
       setCameraOn(true)
     } catch (err) {
       console.error('[vision] camera producer failed:', err)
-      alert(`Camera failed: ${err.message}`)
+
+      const denied =
+        err?.name === 'NotAllowedError' || /permission/i.test(err?.message || '')
+      const noDevice = err?.name === 'NotFoundError'
+
+      setCameraError(
+        denied
+          ? 'Camera blocked. Allow camera access for this site, then try again.'
+          : noDevice
+            ? 'No camera found on this device.'
+            : `Camera failed: ${err?.message || 'unknown error'}`
+      )
     }
   }, [])
 
@@ -221,6 +237,17 @@ const VisionManager = forwardRef(function VisionManager({ onCaptureToChat }, ref
           ▶
         </button>
       </div>
+
+      {cameraError && (
+        <div className="vmgr__error" role="alert">
+          {cameraError}
+          <button
+            className="vmgr__error-dismiss"
+            onClick={() => setCameraError('')}
+            aria-label="Dismiss"
+          >✕</button>
+        </div>
+      )}
 
       <div className="vmgr__stack">
         {boxes.length === 0 ? (

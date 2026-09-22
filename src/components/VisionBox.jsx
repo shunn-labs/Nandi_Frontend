@@ -37,7 +37,13 @@ export default function VisionBox({ box, onClose, onCapture }) {
           setState('offline')
         } else if (s === 'connected') {
           setState('live')
-        } else if (s === 'connecting' || s === 'waiting') {
+        } else if (s === 'waiting') {
+          // The signalling server has told us there is no producer on this
+          // stream id. Folding that into 'connecting' made a stream that does
+          // not exist — a typo in the box above, a camera that was never
+          // started — look exactly like one that is about to come up, forever.
+          setState('waiting')
+        } else if (s === 'connecting') {
           setState('connecting')
         }
       },
@@ -187,6 +193,7 @@ export default function VisionBox({ box, onClose, onCapture }) {
         {state !== 'live' && box.type === 'stream' && (
           <div className="vbox__placeholder">
             {state === 'connecting' && 'Connecting…'}
+            {state === 'waiting' && 'No producer on this stream yet · waiting…'}
             {state === 'offline' && 'Producer offline · auto-retrying…'}
             {state === 'failed' && 'Connection failed · retrying…'}
           </div>

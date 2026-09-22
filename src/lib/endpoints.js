@@ -3,7 +3,7 @@
 //
 //  Running `npm run dev` used to connect the local frontend to PRODUCTION.
 //  Both wsAdapter and visionControl listed the production host first and
-//  health-checked in order, so as long as api.shuun.site was reachable — which
+//  health-checked in order, so as long as the production host was reachable — which
 //  it always is — the local dev build talked to the live server. In testing
 //  this session, a local page registered a vision-control client on production
 //  and started sending chat frames to it. A dev session could have triggered
@@ -13,11 +13,14 @@
 //  override for the cases that need one (previewing a prod build against a
 //  local backend, or pointing a dev build at staging).
 //
-//    VITE_API_BASE=https://api.shuun.site   npm run dev
+//    VITE_API_BASE=https://brain.shunnlabs.in   npm run dev
 //    VITE_VISION_SIGNAL_URL=ws://localhost:8765/ws/signal
 // ═══════════════════════════════════════════════════════════
 
-const PROD_API = 'https://api.shuun.site'
+// Brain serves everything the app talks to over one origin: /auth/google-login,
+// /api/{tts,stt,upload}, and the /ws/{chat,vision-control,logs} sockets.
+// auth.shunnlabs.in is a separate, newer service this frontend does not use.
+const PROD_API = 'https://brain.shunnlabs.in'
 // 127.0.0.1, not localhost. "localhost" resolves to ::1 first in browsers on
 // macOS, and uvicorn's default --host 127.0.0.1 binds IPv4 only — so the page
 // silently fails with a 1006 while curl (which prefers IPv4) works fine. Worse,
@@ -25,7 +28,7 @@ const PROD_API = 'https://api.shuun.site'
 // to THAT instead. Pinning the family removes the ambiguity.
 const DEV_API = 'http://127.0.0.1:8000'
 
-const PROD_VISION_SIGNAL = 'wss://vision.shuun.site/ws/signal'
+const PROD_VISION_SIGNAL = 'wss://vision.shunnlabs.in/ws/signal'
 const DEV_VISION_SIGNAL = 'ws://127.0.0.1:8765/ws/signal'
 
 /** http(s) base for REST calls. */

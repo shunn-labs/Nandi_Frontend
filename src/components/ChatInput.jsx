@@ -15,6 +15,9 @@ const ChatInput = forwardRef(function ChatInput({
   const [attachments, setAttachments] = useState([])
   const [uploading, setUploading] = useState(false)
   const [recording, setRecording] = useState(false)
+  // Mic and STT failures were console-only: the button just stopped pulsing
+  // and nothing was transcribed, with no hint as to why.
+  const [micError, setMicError] = useState('')
   const attachRef = useRef(null)
   const textareaRef = useRef(null)
 
@@ -65,6 +68,7 @@ const ChatInput = forwardRef(function ChatInput({
       return
     }
 
+    setMicError('')
     setRecording(true)
     try {
       const transcribed = await startRecording((vol) => {
@@ -87,6 +91,18 @@ const ChatInput = forwardRef(function ChatInput({
       console.error('[mic] error:', err)
       setRecording(false)
       if (onMicVolume) onMicVolume(0)
+
+      const denied =
+        err?.name === 'NotAllowedError' || /permission/i.test(err?.message || '')
+      const noDevice = err?.name === 'NotFoundError'
+
+      setMicError(
+        denied
+          ? 'Microphone blocked. Allow mic access for this site, then try again.'
+          : noDevice
+            ? 'No microphone found.'
+            : `Could not transcribe: ${err?.message || 'unknown error'}`
+      )
     }
   }
 
@@ -103,6 +119,17 @@ const ChatInput = forwardRef(function ChatInput({
   return (
     <>
       <Attachment ref={attachRef} onChange={handleAttachChange} />
+
+      {micError && (
+        <div className="chat-input-error" role="alert">
+          {micError}
+          <button
+            className="chat-input-error__dismiss"
+            onClick={() => setMicError('')}
+            aria-label="Dismiss"
+          >✕</button>
+        </div>
+      )}
 
       <div className="chat-input-bar">
         {/* Attach */}

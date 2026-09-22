@@ -4,6 +4,7 @@ import Orb from './Orb.jsx'
 import ChatInput from './ChatInput.jsx'
 import VisionManager from './VisionManager.jsx'
 import SettingsPanel from './SettingsPanel.jsx'
+import Markdown from './Markdown.jsx'
 import { IconSettings, IconLogs } from './Icons.jsx'
 import {
   ensureConnection,
@@ -18,6 +19,12 @@ import { speak, stop as stopTts } from '../lib/ttsPlayer.js'
 // distance a new message scrolls into view; above it the user is reading
 // history and must be left alone.
 const FOLLOW_THRESHOLD_PX = 120
+
+// How long a "Thinking…" placeholder may stand before it is called a failure.
+// Without this, anything that stops a reply from arriving — a dropped socket, a
+// server that never answers, a queued message on a connection that never comes
+// back — left the placeholder spinning for the rest of the session.
+const REPLY_TIMEOUT_MS = 45000
 
 const prefersReducedMotion = () =>
   window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
@@ -57,6 +64,40 @@ export default function ChatView({ deviceId, onLogout }) {
   const [ttsEnabled, setTtsEnabled] = useState(() => {
     return localStorage.getItem('nandi_tts_enabled') !== 'false'
   })
+  // Owned here rather than inside SettingsPanel, which is unmounted whenever
+  // the panel is closed — state that has to outlive the panel cannot live in
+  // it. This is what makes the "Show activity logs" toggle do something.
+  const [showLogs, setShowLogs] = useState(() => {
+    return localStorage.getItem('nandi_show_logs') !== 'false'
+  })
+
+  // onMessage is registered once, so it closes over the first render's
+  // `ttsEnabled`. A ref keeps the callback reading today's value.
+  const ttsEnabledRef = useRef(ttsEnabled)
+  useEffect(() => { ttsEnabledRef.current = ttsEnabled }, [ttsEnabled])
+
+  // Fails the outstanding "Thinking…" placeholder if no reply arrives.
+  const replyTimerRef = useRef(null)
+
+  const clearReplyTimer = useCallback(() => {
+    if (replyTimerRef.current) {
+      clearTimeout(replyTimerRef.current)
+      replyTimerRef.current = null
+    }
+  }, [])
+
+  // Turns a trailing placeholder into an error. A no-op if the last message is
+  // not a placeholder, so a late reply that already landed is never overwritten.
+  const failPending = useCallback((reason) => {
+    setMessages(prev => {
+      const last = prev[prev.length - 1]
+      if (!last || last.role !== 'ai' || !last.thinking) return prev
+      return [
+        ...prev.slice(0, -1),
+        { role: 'ai', text: reason, ts: Date.now(), isError: true },
+      ]
+    })
+  }, [])
 
   const messagesAreaRef = useRef(null)
   const chatInputRef = useRef(null)
@@ -79,6 +120,9 @@ export default function ChatView({ deviceId, onLogout }) {
     })
 
     onMessage((data) => {
+      // The server answered, so the placeholder is no longer stranded.
+      clearReplyTimer()
+
       const text = data.response_text
 
       // An error frame has no response text. The placeholder used to stay on
@@ -105,7 +149,7 @@ export default function ChatView({ deviceId, onLogout }) {
         return [...prev, { role: 'ai', text, ts: Date.now() }]
       })
 
-      if (localStorage.getItem('nandi_tts_enabled') !== 'false') {
+      if (ttsEnabledRef.current) {
         speak(
           text,
           (vol) => setOrbAmplitude(vol * 4),
@@ -115,7 +159,10 @@ export default function ChatView({ deviceId, onLogout }) {
     })
 
     ensureConnection()
-  }, [onLogout])
+  }, [onLogout, clearReplyTimer])
+
+  // Don't leave a timer running past unmount.
+  useEffect(() => clearReplyTimer, [clearReplyTimer])
 
   // ── Keyboard shortcuts ──────────────────────────────────
   useEffect(() => {
@@ -196,8 +243,21 @@ export default function ChatView({ deviceId, onLogout }) {
       { role: 'ai', text: '', thinking: true, ts: Date.now() },
     ])
 
-    sendMessage(text, attachments)
-  }, [])
+    const status = sendMessage(text, attachments)
+
+    if (status === 'offline') {
+      // Nothing is going to reconnect by itself, so say so now rather than
+      // showing a placeholder that can never resolve.
+      failPending('Not connected — your message was not sent. Sign in again and retry.')
+      return
+    }
+
+    clearReplyTimer()
+    replyTimerRef.current = setTimeout(() => {
+      replyTimerRef.current = null
+      failPending('No response from the server. Check your connection and try again.')
+    }, REPLY_TIMEOUT_MS)
+  }, [clearReplyTimer, failPending])
 
   // ── Vision capture → attach to chat (mimics file upload flow) ──
   const handleVisionCapture = useCallback((file, label) => {
@@ -218,13 +278,26 @@ export default function ChatView({ deviceId, onLogout }) {
   }, [])
 
   // ── TTS toggle ─────────────────────────────────────────
+  // Shared by the speaker button and the Settings toggle so the two can never
+  // disagree about whether TTS is on.
+  const setTts = useCallback((next) => {
+    localStorage.setItem('nandi_tts_enabled', next)
+    if (!next) stopTts()
+    setTtsEnabled(next)
+  }, [])
+
   const handleTtsToggle = useCallback(() => {
-    setTtsEnabled(prev => {
-      const next = !prev
-      localStorage.setItem('nandi_tts_enabled', next)
-      if (!next) stopTts()
-      return next
-    })
+    // Read through the ref, so this does not need `ttsEnabled` as a dependency
+    // and the state updater stays free of side effects.
+    setTts(!ttsEnabledRef.current)
+  }, [setTts])
+
+  const handleShowLogsChange = useCallback((next) => {
+    localStorage.setItem('nandi_show_logs', next)
+    setShowLogs(next)
+    // Leaving the mobile drawer flagged open would make it reappear the moment
+    // logs were switched back on.
+    if (!next) setLogsOpen(false)
   }, [])
 
   // ── Camera button → start/stop vision producer ─────────
@@ -275,7 +348,7 @@ export default function ChatView({ deviceId, onLogout }) {
   }, [])
 
   return (
-    <div className="app-layout">
+    <div className={`app-layout${showLogs ? '' : ' app-layout--no-logs'}`}>
       {/* ─── Header ─── */}
       <header className="app-header">
         <div className="app-header__left">
@@ -292,34 +365,51 @@ export default function ChatView({ deviceId, onLogout }) {
           <span className="app-header__date">{date}</span>
         </div>
 
+        {/* Each label is a separate element from its icon so it can be dropped
+            on phones, where the three labelled buttons need ~292px of a 375px
+            header and Settings ended up off-screen. title/aria-label carry the
+            meaning once the text is hidden. */}
         <div className="app-header__right">
-          <button
-            className="app-header__toggle-logs"
-            onClick={() => setLogsOpen(prev => !prev)}
-          >
-            <IconLogs size={15} />
-            <span style={{ marginLeft: 4 }}>Logs</span>
-          </button>
+          {showLogs && (
+            <button
+              className="app-header__toggle-logs"
+              onClick={() => setLogsOpen(prev => !prev)}
+              title="Activity logs"
+              aria-label="Activity logs"
+            >
+              <IconLogs size={15} />
+              <span className="app-header__btn-label">Logs</span>
+            </button>
+          )}
           <button
             className="app-header__toggle-logs"
             onClick={() => setVisionOpen(prev => !prev)}
+            title="Vision"
+            aria-label="Vision"
           >
-            <span>👁 Vision</span>
+            <span aria-hidden="true">👁</span>
+            <span className="app-header__btn-label">Vision</span>
           </button>
           <button
             className="app-header__settings-btn"
             onClick={() => setSettingsOpen(true)}
+            title="Settings"
+            aria-label="Settings"
           >
             <IconSettings size={17} />
-            <span>Settings</span>
+            <span className="app-header__btn-label">Settings</span>
           </button>
         </div>
       </header>
 
       {/* ─── Log Sidebar (left) ─── */}
-      <aside className={`log-sidebar${logsOpen ? ' log-sidebar--open' : ''}`}>
-        <LogPanel />
-      </aside>
+      {/* Not rendered at all when the setting is off, so the log socket is
+          closed rather than merely hidden. */}
+      {showLogs && (
+        <aside className={`log-sidebar${logsOpen ? ' log-sidebar--open' : ''}`}>
+          <LogPanel />
+        </aside>
+      )}
 
       {/* ─── Chat Area (center, ChatGPT-style width) ─── */}
       <main className="chat-area">
@@ -355,6 +445,10 @@ export default function ChatView({ deviceId, onLogout }) {
                     </span>
                   ) : msg.isError ? (
                     <span style={{ color: '#ff8a8a' }}>{msg.text}</span>
+                  ) : msg.role === 'ai' ? (
+                    // Only the assistant's text is markdown. The user's own
+                    // message is shown exactly as typed.
+                    <Markdown>{msg.text}</Markdown>
                   ) : (
                     msg.text
                   )}
@@ -407,6 +501,10 @@ export default function ChatView({ deviceId, onLogout }) {
         <SettingsPanel
           onClose={() => setSettingsOpen(false)}
           onLogout={onLogout}
+          ttsEnabled={ttsEnabled}
+          onTtsChange={setTts}
+          showLogs={showLogs}
+          onShowLogsChange={handleShowLogsChange}
         />
       )}
 

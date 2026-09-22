@@ -69,8 +69,13 @@ const Attachment = forwardRef(function Attachment({ onChange }, ref) {
     } catch (err) {
       clearInterval(timer)
       console.error(`[att] upload failed: ${file.name}`, err)
+      // Keep the reason. A bare ✕ told the user only that something went
+      // wrong, with the cause — a 401, a 500 from storage, an offline
+      // server — visible nowhere but the console.
       setItems(prev => prev.map(f =>
-        f.id === id ? { ...f, status: 'error', progress: 0 } : f
+        f.id === id
+          ? { ...f, status: 'error', progress: 0, error: err?.message || 'Upload failed' }
+          : f
       ))
     }
   }, [])
@@ -122,7 +127,11 @@ const Attachment = forwardRef(function Attachment({ onChange }, ref) {
       {items.length > 0 && (
         <div className="att-strip">
           {items.map(item => (
-            <div key={item.id} className="att-chip">
+            <div
+              key={item.id}
+              className="att-chip"
+              title={item.status === 'error' ? item.error : item.filename}
+            >
               <span className="att-chip__icon">{fileIcon(item.content_type)}</span>
               <span className="att-chip__name">{truncate(item.filename)}</span>
               {item.status === 'uploading' && (
@@ -132,7 +141,10 @@ const Attachment = forwardRef(function Attachment({ onChange }, ref) {
                 <span className="att-chip__status att-chip__status--ok">✓</span>
               )}
               {item.status === 'error' && (
-                <span className="att-chip__status att-chip__status--err">✕</span>
+                <span
+                  className="att-chip__status att-chip__status--err"
+                  title={item.error}
+                >✕</span>
               )}
               <button
                 className="att-chip__rm"

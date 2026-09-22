@@ -59,12 +59,14 @@ function monitorVolume() {
 // ── Start recording ──────────────────────────────────────
 
 let resolveRecording = null
+let rejectRecording = null
 
 export function startRecording(onVolume) {
   volumeCallback = onVolume || null
 
   return new Promise(async (resolve, reject) => {
     resolveRecording = resolve
+    rejectRecording = reject
 
     try {
       mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -103,8 +105,13 @@ export function startRecording(onVolume) {
           const text = await transcribe(blob)
           resolveRecording?.(text)
         } catch (err) {
+          // Was `resolve('')`, which is the same value used for "you didn't
+          // say anything". A failing STT endpoint was therefore indis-
+          // tinguishable from silence: the mic stopped and nothing happened,
+          // with the reason only in the console. Reject so the caller can say
+          // so.
           console.error('[stt] transcription failed:', err)
-          resolveRecording?.('')
+          rejectRecording?.(err)
         }
       }
 

@@ -179,6 +179,19 @@ export function resetConnection() {
 
 // ── Send a chat message ──────────────────────────────────
 
+/**
+ * Send a chat message.
+ *
+ * Returns what actually happened, because the caller draws a "Thinking…"
+ * placeholder and needs to know whether a reply is even possible:
+ *
+ *   'sent'    went out on an open socket
+ *   'queued'  socket is down but reconnecting — it will go out on reconnect
+ *   'offline' the socket is stopped (auth rejected, or disconnect() was
+ *             called). Nothing will reconnect on its own, so queueing would
+ *             leave the message — and the placeholder above it — pending
+ *             forever. This is what used to happen silently.
+ */
 export function sendMessage(text, attachments = []) {
   const payload = {
     query: text,
@@ -188,10 +201,14 @@ export function sendMessage(text, attachments = []) {
 
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(payload))
-  } else {
-    pendingQueue.push(payload)
-    ensureConnection()
+    return 'sent'
   }
+
+  if (stopped) return 'offline'
+
+  pendingQueue.push(payload)
+  ensureConnection()
+  return 'queued'
 }
 
 // ── Upload a file ────────────────────────────────────────
