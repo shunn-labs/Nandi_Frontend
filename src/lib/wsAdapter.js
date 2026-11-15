@@ -21,6 +21,11 @@ let pendingQueue = []
 let messageCallback = null
 let connectionCallback = null
 let authFailureCallback = null
+let promptCallback = null
+
+// Frames that are not replies: a device asking for approval or an answer, a request closing,
+// and Nandi speaking first. They must not replace the "Thinking…" placeholder of a reply.
+const PROMPT_TYPES = new Set(['approval', 'question', 'request_closed', 'notify'])
 let reconnectAttempt = 0
 let stopped = false
 
@@ -70,6 +75,20 @@ export function onConnectionChange(cb) {
 
 export function onMessage(cb) {
   messageCallback = cb
+}
+
+/** Approvals, questions, request updates and Nandi's own messages (see PROMPT_TYPES). */
+export function onPrompt(cb) {
+  promptCallback = cb
+}
+
+/** The user's answer to an approval or question card. False if the socket is not open. */
+export function sendPromptAnswer(frame) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(frame))
+    return true
+  }
+  return false
 }
 
 function setConnected(val) {
@@ -132,6 +151,11 @@ function connectWS() {
     if (data.error === 'Invalid or expired token' || data.error === 'Not authenticated') {
       handleAuthFailure(data.error)
       try { sock.close() } catch {}
+      return
+    }
+
+    if (PROMPT_TYPES.has(data.type)) {
+      if (promptCallback) promptCallback(data)
       return
     }
 

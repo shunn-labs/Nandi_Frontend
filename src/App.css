@@ -1551,3 +1551,41 @@ body {
 .login-page__hint--error {
   color: #ff8a8a;
 }
+
+/* ── Approval / question cards (a device needs you; see PromptCard.jsx) ───── */
+.prompt-card {
+  background: var(--bg-raised);
+  border: 1px solid var(--amber);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  min-width: min(360px, 100%);
+  max-width: 100%;
+}
+.prompt-card--question { border-color: var(--cyan-dim); }
+.prompt-card--done { border-color: var(--border); opacity: 0.85; }
+.prompt-card__head {
+  display: flex; justify-content: space-between; gap: 12px;
+  font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 6px;
+}
+.prompt-card__timer { font-family: var(--font-mono); color: var(--amber); }
+.prompt-card__what { color: var(--text-primary); font-weight: 500; line-height: 1.4; }
+.prompt-card__why { color: var(--text-secondary); font-size: 0.85rem; margin-top: 4px; }
+.prompt-card__actions { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
+.prompt-card__actions--wrap { flex-wrap: wrap; justify-content: flex-start; }
+.prompt-card__btn {
+  background: var(--bg-hover); color: var(--text-primary);
+  border: 1px solid var(--border-light); border-radius: var(--radius-sm);
+  padding: 7px 14px; font: inherit; font-size: 0.88rem; cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+.prompt-card__btn:hover:not(:disabled) { border-color: var(--cyan); }
+.prompt-card__btn:disabled { opacity: 0.5; cursor: default; }
+.prompt-card__btn--allow { background: var(--green-dim); border-color: var(--green); }
+.prompt-card__btn--deny { border-color: var(--red); }
+.prompt-card__reply { display: flex; gap: 8px; margin-top: 10px; }
+.prompt-card__reply input {
+  flex: 1; min-width: 0; background: var(--bg-base); color: var(--text-primary);
+  border: 1px solid var(--border-light); border-radius: var(--radius-sm); padding: 7px 10px; font: inherit;
+}
+.prompt-card__outcome { margin-top: 10px; font-size: 0.85rem; color: var(--text-secondary); }
+

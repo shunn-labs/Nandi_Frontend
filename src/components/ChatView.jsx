@@ -5,12 +5,15 @@ import ChatInput from './ChatInput.jsx'
 import VisionManager from './VisionManager.jsx'
 import SettingsPanel from './SettingsPanel.jsx'
 import Markdown from './Markdown.jsx'
+import PromptCard from './PromptCard.jsx'
 import { IconSettings, IconLogs } from './Icons.jsx'
 import {
   ensureConnection,
   onAuthFailure,
   onConnectionChange,
   onMessage,
+  onPrompt,
+  sendPromptAnswer,
   sendMessage,
 } from '../lib/wsAdapter.js'
 import { speak, stop as stopTts } from '../lib/ttsPlayer.js'
@@ -161,8 +164,39 @@ export default function ChatView({ deviceId, onLogout }) {
       }
     })
 
+    // Approvals, questions and Nandi's own messages. Inserted before a pending "Thinking…"
+    // placeholder so the reply that ends the task still replaces it.
+    const insertBeforePending = (item) => setMessages(prev => {
+      const last = prev[prev.length - 1]
+      return (last && last.role === 'ai' && last.thinking)
+        ? [...prev.slice(0, -1), item, last]
+        : [...prev, item]
+    })
+
+    onPrompt((data) => {
+      if (data.type === 'approval' || data.type === 'question') {
+        insertBeforePending({
+          role: 'prompt', kind: data.type, id: data.id, device: data.device,
+          what: data.what, why: data.why, options: data.options || [], allowText: data.allow_text,
+          expiresAt: data.expires_at || Date.now() + 60000, status: 'open', ts: Date.now(),
+        })
+      } else if (data.type === 'request_closed') {
+        setMessages(prev => prev.map(m =>
+          (m.role === 'prompt' && m.id === data.id) ? { ...m, status: data.outcome || 'closed' } : m))
+      } else if (data.type === 'notify' && data.response) {
+        insertBeforePending({ role: 'ai', text: data.response, ts: Date.now(), proactive: true })
+        if (ttsEnabledRef.current) speak(data.response, (vol) => setOrbAmplitude(vol * 4), () => setOrbAmplitude(0))
+      }
+    })
+
     ensureConnection()
   }, [onLogout, clearReplyTimer])
+
+  const answerPrompt = useCallback((id, frame) => {
+    const sent = sendPromptAnswer({ ...frame, id })
+    setMessages(prev => prev.map(m =>
+      (m.role === 'prompt' && m.id === id) ? { ...m, status: sent ? 'sent' : 'Not connected: answer not sent' } : m))
+  }, [])
 
   // Don't leave a timer running past unmount.
   useEffect(() => clearReplyTimer, [clearReplyTimer])
@@ -436,7 +470,12 @@ export default function ChatView({ deviceId, onLogout }) {
               </div>
             )}
 
-            {messages.map((msg, i) => (
+            {messages.map((msg, i) => msg.role === 'prompt' ? (
+              <div key={msg.id || i} className="msg msg--ai">
+                <span className="msg__label">Nandi</span>
+                <PromptCard msg={msg} onAnswer={answerPrompt} />
+              </div>
+            ) : (
               <div key={i} className={`msg msg--${msg.role}`}>
                 <span className="msg__label">
                   {msg.role === 'user' ? 'You' : 'Nandi'}
