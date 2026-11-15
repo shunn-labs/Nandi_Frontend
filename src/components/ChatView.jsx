@@ -24,7 +24,10 @@ const FOLLOW_THRESHOLD_PX = 120
 // Without this, anything that stops a reply from arriving — a dropped socket, a
 // server that never answers, a queued message on a connection that never comes
 // back — left the placeholder spinning for the rest of the session.
-const REPLY_TIMEOUT_MS = 45000
+// Long enough for a phone task: the android server's run_task may take up to 240 s, plus Brain's
+// own planning and answer. At 45 s the chat said "No response" while the phone was still working,
+// and the real answer arrived afterwards.
+const REPLY_TIMEOUT_MS = 300000
 
 const prefersReducedMotion = () =>
   window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
