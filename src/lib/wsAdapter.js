@@ -25,7 +25,7 @@ let promptCallback = null
 
 // Frames that are not replies: a device asking for approval or an answer, a request closing,
 // and Nandi speaking first. They must not replace the "Thinking…" placeholder of a reply.
-const PROMPT_TYPES = new Set(['approval', 'question', 'request_closed', 'notify'])
+const PROMPT_TYPES = new Set(['approval', 'question', 'request_closed', 'notify', 'device_activity'])
 let reconnectAttempt = 0
 let stopped = false
 

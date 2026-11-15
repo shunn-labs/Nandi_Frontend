@@ -6,6 +6,7 @@ import VisionManager from './VisionManager.jsx'
 import SettingsPanel from './SettingsPanel.jsx'
 import Markdown from './Markdown.jsx'
 import PromptCard from './PromptCard.jsx'
+import ActivityCard, { applyActivity } from './ActivityCard.jsx'
 import { IconSettings, IconLogs } from './Icons.jsx'
 import {
   ensureConnection,
@@ -183,6 +184,8 @@ export default function ChatView({ deviceId, onLogout }) {
       } else if (data.type === 'request_closed') {
         setMessages(prev => prev.map(m =>
           (m.role === 'prompt' && m.id === data.id) ? { ...m, status: data.outcome || 'closed' } : m))
+      } else if (data.type === 'device_activity') {
+        setMessages(prev => applyActivity(prev, data))
       } else if (data.type === 'notify' && data.response) {
         insertBeforePending({ role: 'ai', text: data.response, ts: Date.now(), proactive: true })
         if (ttsEnabledRef.current) speak(data.response, (vol) => setOrbAmplitude(vol * 4), () => setOrbAmplitude(0))
@@ -470,7 +473,12 @@ export default function ChatView({ deviceId, onLogout }) {
               </div>
             )}
 
-            {messages.map((msg, i) => msg.role === 'prompt' ? (
+            {messages.map((msg, i) => msg.role === 'activity' ? (
+              <div key={msg.taskId} className="msg msg--ai msg--activity">
+                <span className="msg__label">Nandi</span>
+                <ActivityCard item={msg} />
+              </div>
+            ) : msg.role === 'prompt' ? (
               <div key={msg.id || i} className="msg msg--ai">
                 <span className="msg__label">Nandi</span>
                 <PromptCard msg={msg} onAnswer={answerPrompt} />
