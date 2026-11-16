@@ -12,7 +12,7 @@
 
 // client_id now comes from the shared helper, so the chat socket and this one
 // always agree on what to call this browser.
-import { getClientId } from './clientId.js'
+import { getClientId, getDeviceName } from './clientId.js'
 import { VISION_CONTROL_WS } from './endpoints.js'
 
 
@@ -20,12 +20,20 @@ import { VISION_CONTROL_WS } from './endpoints.js'
 const FATAL_CLOSE_CODES = new Set([1008, 4401, 4403])
 const MAX_RECONNECT_DELAY = 30000
 
+// Keeps an idle socket from being reaped by proxies between vision commands,
+// which can be minutes apart.
+const PING_INTERVAL_MS = 25000
+
 let ws = null
 let connected = false
 let commandHandler = null
 let reconnectTimer = null
 let reconnectAttempt = 0
 let stopped = false
+let pingTimer = null
+// Why the server refused to register us. A refusal stops retrying, so without
+// this the column could only show a grey dot and no reason.
+let lastError = ''
 
 function getToken() {
   return localStorage.getItem('user_token')
@@ -39,6 +47,21 @@ export function getMyClientId() {
 // ── Set the handler that receives vision commands ──────────
 export function onVisionCommand(handler) {
   commandHandler = handler
+}
+
+function stopPing() {
+  if (pingTimer) {
+    clearInterval(pingTimer)
+    pingTimer = null
+  }
+}
+
+function startPing(sock) {
+  stopPing()
+  pingTimer = setInterval(() => {
+    if (ws !== sock || sock.readyState !== WebSocket.OPEN) return
+    sock.send(JSON.stringify({ type: 'ping' }))
+  }, PING_INTERVAL_MS)
 }
 
 function scheduleReconnect() {
@@ -89,9 +112,12 @@ function connect() {
   sock.onopen = () => {
     if (ws !== sock) return   // superseded
     console.log('[vision-ctrl] connected, registering…')
+    // device_name lets the server push vision results to the device a query
+    // came from without having to parse it back out of client_id.
     sock.send(JSON.stringify({
       type: 'register',
       client_id: clientId,
+      device_name: getDeviceName(),
       token,
     }))
   }
@@ -104,21 +130,30 @@ function connect() {
     if (msg.type === 'registered') {
       connected = true
       reconnectAttempt = 0
+      lastError = ''
+      startPing(sock)
       console.log(`[vision-ctrl] registered as ${msg.client_id}`)
       return
     }
 
-    if (msg.error) {
+    if (msg.type === 'pong') return
+
+    // Current servers send {type:'error', error} and then close with 4401;
+    // older ones send a bare {error}. Either way it is a refusal.
+    if (msg.type === 'error' || msg.error) {
       // The server now rejects bad tokens and client_ids owned by someone
       // else. Neither is fixable by reconnecting, so stop instead of looping.
-      console.warn('[vision-ctrl] registration refused:', msg.error)
+      lastError = msg.error || msg.message || 'registration refused'
+      console.warn('[vision-ctrl] registration refused:', lastError)
       stopped = true
+      connected = false
+      stopPing()
       return
     }
 
     // Forward vision commands to handler
-    //   { action: 'show_frame',  image_b64, label, wid }
-    //   { action: 'show_stream', stream_id, label, wid }
+    //   { action: 'show_frame',  image_b64, mime, label, wid, request_id, camera }
+    //   { action: 'show_stream', stream_id, label, wid, request_id }
     //   { action: 'close',       wid }
     //   { action: 'close_all' }
     if (msg.action && commandHandler) {
@@ -133,9 +168,12 @@ function connect() {
   sock.onclose = (event) => {
     if (ws !== sock) return   // a newer socket already took over — ignore
     connected = false
+    stopPing()
     if (FATAL_CLOSE_CODES.has(event.code)) {
       console.warn(`[vision-ctrl] rejected (${event.code}) — not retrying`)
       stopped = true
+      // Keep the error frame's text if there was one; otherwise say something.
+      if (!lastError) lastError = event.reason || `rejected by server (${event.code})`
       return
     }
     if (stopped) return
@@ -150,6 +188,8 @@ export function startVisionControl() {
   if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
     return
   }
+  // A fresh start — e.g. after logout and a new login — must undo the stop
+  // left by disconnect() or by a refusal, or nothing would ever connect again.
   stopped = false
   reconnectAttempt = 0
   connect()
@@ -159,8 +199,14 @@ export function isVisionControlConnected() {
   return connected
 }
 
+/** Why the server refused this browser's registration, or '' if it has not. */
+export function getVisionControlError() {
+  return lastError
+}
+
 export function disconnect() {
   stopped = true
+  stopPing()
   if (reconnectTimer) {
     clearTimeout(reconnectTimer)
     reconnectTimer = null

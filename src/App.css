@@ -656,6 +656,66 @@ body {
 
 .md input[type="checkbox"] { margin-right: 0.45em; }
 
+/* ── Placeholder, errors and problems inside assistant bubbles ── */
+
+/* "Thinking…" until the server reports progress, then what it is doing. */
+.msg__thinking {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.msg__thinking--progress {
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+}
+
+/* Same red as the other inline notices. Markdown inside keeps its own
+   emphasis colours, which is fine for an error. */
+.msg__error-text { color: #ff8a8a; }
+
+/* The structured errors under an answer: small and collapsed by default, so a
+   partial answer still reads as an answer first. */
+.msg__problems {
+  margin-top: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: rgba(245, 158, 11, 0.05);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  white-space: normal;
+}
+
+.msg__problems summary {
+  cursor: pointer;
+  color: var(--amber);
+  font-weight: 600;
+  user-select: none;
+}
+
+.msg__problems ul {
+  list-style: none;
+  margin: 6px 0 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* --text-muted is too faint at this size on a bubble, hence -secondary. */
+.msg__problem-where {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  color: var(--text-secondary);
+}
+
+.msg__problem-hint {
+  display: block;
+  margin-top: 1px;
+  font-size: 0.92em;
+  color: var(--text-secondary);
+}
+
 .msg__meta {
   font-size: 0.72rem;
   color: var(--text-muted);
@@ -1507,6 +1567,19 @@ body {
 }
 
 .vmgr__error-dismiss:hover { opacity: 1; }
+
+/* Vision-control registration refused (bad token, client_id owned by someone
+   else). One quiet line under the header — the column still works for manual
+   streams and the camera. */
+.vmgr__ctrl-error {
+  flex-shrink: 0;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+  color: #ff8a8a;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  word-break: break-word;
+}
 
 /* Inline mic / STT failure notice above the input bar. */
 .chat-input-error {

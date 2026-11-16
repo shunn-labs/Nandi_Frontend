@@ -14,54 +14,49 @@
 - **Multi-stream stacking** — boxes stack newest-at-bottom in the right column. When too many, the column scrolls. (Simpler than dynamic relayout; you always see at least the latest one.)
 - **Camera button** = WebRTC producer. Pressing it starts streaming your device camera to the vision server with `stream_id = web_react_<deviceName>_camera`.
 
-## How the vision agent talks to the browser
+## How vision results reach the browser (automatic)
 
-The browser can't run a FastAPI server. Instead:
-
-```
-Vision Agent  ──HTTP POST──►  Brain Server (api.shuun.site)
-                                   │
-                                   │  Brain holds a WebSocket open
-                                   │  to each connected browser, keyed
-                                   │  by client_id
-                                   ▼
-                              Browser → renders the vision box
-```
-
-### Steps to wire it up
-
-**1. Add `BACKEND_VISION_DISPATCH.py` to your brain server**
-
-```python
-from vision_dispatch import router as vision_dispatch_router
-app.include_router(vision_dispatch_router)
-```
-
-This adds:
-- `WebSocket /ws/vision-control` — browser connects, registers with its `client_id`
-- `POST /api/vision/dispatch/{client_id}/receive/frame` — same payload as desktop `/receive/frame`
-- `POST /api/vision/dispatch/{client_id}/receive/stream` — same payload as desktop `/receive/stream`
-- `POST /api/vision/dispatch/{client_id}/close`
-
-**2. Update `CLIENT_REGISTRY` in your vision agent's `.env`**
-
-```bash
-CLIENT_REGISTRY=local:http://localhost:8766,web_react_somnath-pc:https://api.shuun.site/api/vision/dispatch/web_react_somnath-pc
-```
-
-The client_id matches what the browser registers as: `web_react_<deviceName>`. Whatever device name you typed at first launch becomes part of it. You can see it in the browser console (`[vision-ctrl] connected, registering…`).
-
-**3. Use the agent normally**
+Nothing to configure. Every browser tab opens `/ws/vision-control` on the brain,
+authenticates with its JWT and registers its `client_id` (`web_react_<deviceName>`)
+and `device_name`. Every chat message carries the same `client_id`, so the brain
+always knows which device a request came from.
 
 ```
-"Nandi, show pc cam on web_react_somnath-pc"
+You (on "somnath-pc"): "take a snapshot of the PC camera and show me"
+   │  /ws/chat {query, client_id, device_name, request_id}
+   ▼
+Brain agent ──MCP──► Vision server  take_snapshot(cameras=["PC camera"])
+   ▲                        │ returns the JPEG + a `display` directive
+   └────────────────────────┘
+Brain ──/ws/vision-control──► the same device ("somnath-pc") → a VisionBox opens
 ```
 
-The vision agent calls `start_raw_stream(stream_id='pc_cam', client_id='web_react_somnath-pc')`, which POSTs to the brain dispatch URL, brain forwards via WebSocket, browser opens a VisionBox showing the WebRTC stream.
+- The vision server never needs a client id or URL; the old `CLIENT_REGISTRY`
+  dictionary is gone.
+- Pushes fan out to every tab of the same device. If the device you're talking
+  from has no display connected, the brain uses your most recently active device
+  that does, and the answer says so.
+- The vision column opens by itself when a frame or live view arrives.
+- While the brain works, the "Thinking…" line shows progress ("Running face
+  detection on PC camera…"). If something fails, the answer explains why and a
+  collapsible **Problems** block lists each issue with a fix hint.
+
+Messages the browser receives on `/ws/vision-control`:
+
+```json
+{"action": "show_frame",  "wid": "frame_…", "label": "PC camera — face recognition", "image_b64": "…", "mime": "image/jpeg", "request_id": "…"}
+{"action": "show_stream", "wid": "stream_<id>", "label": "…", "stream_id": "<id>"}
+{"action": "close", "wid": "…"}
+{"action": "close_all"}
+```
+
+The REST dispatch endpoints (`/api/vision/dispatch/{client_id}/…`) still exist
+for scripts, but require the `x-dispatch-key` header (brain env
+`VISION_DISPATCH_KEY`).
 
 ## Vision server signaling URL
 
-The browser consumer connects directly to your vision server's `/ws/signal`. Default is `wss://vision.shuun.site/ws/signal`. To override for dev, run this in the browser console:
+The browser consumer connects directly to your vision server's `/ws/signal`. Default is `wss://vision.shunnlabs.in/ws/signal`. To override for dev, run this in the browser console:
 
 ```js
 localStorage.setItem('nandi_vision_signal_url', 'ws://localhost:8765/ws/signal')
@@ -76,8 +71,8 @@ Then reload.
 - A VisionBox appears in the right column showing the local preview
 - Click the camera icon again, or the box's ✕ button, to stop
 
-The vision agent can now `analyze_stream(stream_id='web_react_somnath-pc_camera', ...)` from your phone, PC, or any other client.
+Nandi can then analyse it from any of your devices — e.g. "what am I holding up to my camera?" uses this device's browser camera when it is live.
 
 ## Capture button (📸)
 
-On any VisionBox, the 📸 button grabs the current frame and inserts it into the chat as a message. You can then type a question about it and Nandi will see it in context (the image is base64-encoded; your backend needs to handle inline base64 images in chat or you can upload it as an attachment — easy to wire in if needed).
+On any VisionBox, the 📸 button grabs the current frame and adds it to the chat as an uploaded attachment, so you can ask a question about it.

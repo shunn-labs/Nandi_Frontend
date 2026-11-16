@@ -4,6 +4,7 @@ import DeviceSetup from './components/DeviceSetup.jsx'
 import ChatView from './components/ChatView.jsx'
 import { getDeviceName } from './lib/clientId.js'
 import { disconnect, resetConnection } from './lib/wsAdapter.js'
+import { disconnect as disconnectVisionControl } from './lib/visionControl.js'
 
 function getDeviceId() {
   // Shared with clientId.js, which derives the client_id both sockets send.
@@ -41,6 +42,10 @@ export default function App() {
   const handleLogout = useCallback(() => {
     localStorage.removeItem('user_token')
     disconnect()
+    // The vision-control socket registered with the same token. Left open it
+    // would keep receiving this account's frames after sign-out; the next
+    // login's VisionManager starts it afresh.
+    disconnectVisionControl()
     setIsLoggedIn(false)
   }, [])
 

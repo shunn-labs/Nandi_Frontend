@@ -4,6 +4,7 @@ import {
   startVisionControl,
   onVisionCommand,
   isVisionControlConnected,
+  getVisionControlError,
   getMyClientId,
 } from '../lib/visionControl.js'
 import { startProducer } from '../lib/webrtcConsumer.js'
@@ -11,12 +12,28 @@ import { startProducer } from '../lib/webrtcConsumer.js'
 let _boxIdCounter = 0
 const nextBoxId = () => `vbox_${++_boxIdCounter}_${Date.now()}`
 
+// Every vision answer can push a frame, so frames are capped. Only frames are
+// ever dropped to make room — never a stream or the user's camera preview.
+const MAX_FRAME_BOXES = 12
+
+/** Drops the oldest frame boxes beyond MAX_FRAME_BOXES, leaving the rest alone. */
+function capFrames(boxes) {
+  let excess = boxes.filter(b => b.type === 'frame').length - MAX_FRAME_BOXES
+  if (excess <= 0) return boxes
+  return boxes.filter(b => {
+    if (b.type !== 'frame' || excess <= 0) return true
+    excess -= 1
+    return false
+  })
+}
+
 /**
  * VisionManager — owns the stack of VisionBox tiles in the right column.
  *
  *  Features:
  *   - Listens for vision-agent commands (show_frame / show_stream / close / close_all)
- *   - Each show_frame creates a NEW box (no replacement) so frames stack up
+ *   - A show_frame whose wid is already on screen updates that box in place;
+ *     any other frame stacks as a new box (the 12 most recent are kept)
  *   - Each show_stream is deduped by stream_id (so duplicate calls reuse the same box)
  *   - Manual stream consumer input at the top of the column
  *   - "Close All" button
@@ -25,10 +42,14 @@ const nextBoxId = () => `vbox_${++_boxIdCounter}_${Date.now()}`
  *  Props:
  *   onCaptureToChat(file, label)  – called when a box's 📸 button is hit;
  *                                   `file` is a real File ready to be uploaded
+ *   onActivity()                  – called whenever the server shows a frame or
+ *                                   stream, so the parent can reveal the column
  */
-const VisionManager = forwardRef(function VisionManager({ onCaptureToChat }, ref) {
+const VisionManager = forwardRef(function VisionManager({ onCaptureToChat, onActivity }, ref) {
   const [boxes, setBoxes] = useState([])
   const [ctrlConnected, setCtrlConnected] = useState(false)
+  // Why the server refused this browser's vision-control registration, if it did.
+  const [ctrlError, setCtrlError] = useState('')
   const [manualStreamId, setManualStreamId] = useState('')
   // Reported inline in this column. It used to be a native alert(), which
   // blocks the whole page behind a browser-chrome dialog for what is a routine,
@@ -37,25 +58,40 @@ const VisionManager = forwardRef(function VisionManager({ onCaptureToChat }, ref
   const cameraProducerRef = useRef(null)
   const [cameraOn, setCameraOn] = useState(false)
 
+  // The command handler below is registered once, so it would keep calling the
+  // first render's onActivity. Read the current one through a ref instead.
+  const onActivityRef = useRef(onActivity)
+  useEffect(() => { onActivityRef.current = onActivity }, [onActivity])
+
   // ── Vision-control WebSocket ──────────────────────────────
   useEffect(() => {
     startVisionControl()
 
     const pollId = setInterval(() => {
       setCtrlConnected(isVisionControlConnected())
+      setCtrlError(getVisionControlError())
     }, 1000)
 
     onVisionCommand((msg) => {
-      const { action, wid, label, stream_id, image_b64 } = msg
+      const { action, wid, label, stream_id, image_b64, mime } = msg
 
       if (action === 'show_frame') {
-        // ALWAYS create a new box — frames should accumulate, not replace
-        setBoxes(prev => [...prev, {
-          id: nextBoxId(),
-          type: 'frame',
-          label: label || 'Frame',
-          imageB64: image_b64,
-        }])
+        const image = { imageB64: image_b64, mime: mime || 'image/jpeg' }
+        setBoxes(prev => {
+          // The server re-sends a wid to refresh that box, so update it in
+          // place. Anything else stacks up as a new box.
+          const existing = wid ? prev.find(b => b.id === wid) : null
+          if (existing?.type === 'frame') {
+            return prev.map(b => (
+              b.id === wid ? { ...b, ...image, label: label || b.label } : b
+            ))
+          }
+          // A wid already taken by a stream or camera box would collide as a
+          // React key, so that frame gets an id of its own.
+          const id = wid && !existing ? wid : nextBoxId()
+          return capFrames([...prev, { id, type: 'frame', label: label || 'Frame', ...image }])
+        })
+        onActivityRef.current?.()
       }
 
       else if (action === 'show_stream') {
@@ -70,6 +106,7 @@ const VisionManager = forwardRef(function VisionManager({ onCaptureToChat }, ref
             streamId: stream_id,
           }]
         })
+        onActivityRef.current?.()
       }
 
       else if (action === 'close' && wid) {
@@ -77,13 +114,10 @@ const VisionManager = forwardRef(function VisionManager({ onCaptureToChat }, ref
       }
 
       else if (action === 'close_all') {
-        // Also stop the camera producer if running
-        if (cameraProducerRef.current) {
-          try { cameraProducerRef.current.close() } catch {}
-          cameraProducerRef.current = null
-          setCameraOn(false)
-        }
-        setBoxes([])
+        // Server-initiated, so it only clears what the server put up. The
+        // user's own camera preview stays, and its producer keeps running —
+        // the "Close all" button (handleCloseAll) is what stops the camera.
+        setBoxes(prev => prev.filter(b => b.type === 'camera'))
       }
     })
 
@@ -218,6 +252,14 @@ const VisionManager = forwardRef(function VisionManager({ onCaptureToChat }, ref
           )}
         </div>
       </div>
+
+      {/* A refused registration stops retrying for good, so say why rather
+          than leave only a grey dot. */}
+      {ctrlError && (
+        <div className="vmgr__ctrl-error" role="status">
+          Display link refused: {ctrlError}
+        </div>
+      )}
 
       {/* ── Manual stream consumer ── */}
       <div className="vmgr__manual">

@@ -20,14 +20,53 @@ import { speak, stop as stopTts } from '../lib/ttsPlayer.js'
 // history and must be left alone.
 const FOLLOW_THRESHOLD_PX = 120
 
-// How long a "Thinking…" placeholder may stand before it is called a failure.
+// How long a "Thinking…" placeholder may go without hearing anything before it
+// is called a failure. Every progress frame (the server sends a heartbeat at
+// least every ~15 s) restarts it, so a long vision job that keeps reporting in
+// is never cut off — only silence is.
 // Without this, anything that stops a reply from arriving — a dropped socket, a
 // server that never answers, a queued message on a connection that never comes
 // back — left the placeholder spinning for the rest of the session.
-const REPLY_TIMEOUT_MS = 45000
+const REPLY_TIMEOUT_MS = 90000
 
 const prefersReducedMotion = () =>
   window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+
+// Index of the placeholder still waiting on `requestId`, or -1.
+const findPending = (list, requestId) =>
+  list.findIndex(m => m.thinking && m.requestId === requestId)
+
+// Server-supplied fields are coerced to strings before they reach JSX: an
+// object there would throw during render and blank the whole chat.
+const asText = (v) => (v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v))
+
+const toProblem = (e) => (e && typeof e === 'object'
+  ? { stage: asText(e.stage), source: asText(e.source), message: asText(e.message), hint: asText(e.hint) }
+  : { stage: '', source: '', message: asText(e), hint: '' })
+
+// The structured errors attached to an answer — a camera that was offline, a
+// tool that failed. Collapsed by default: the answer already says in words
+// what went wrong, and this is the detail behind it.
+function ProblemList({ errors }) {
+  return (
+    <details className="msg__problems">
+      <summary>⚠ {errors.length} {errors.length === 1 ? 'problem' : 'problems'}</summary>
+      <ul>
+        {errors.map((err, i) => {
+          const where = [err.stage, err.source].filter(Boolean).join(' · ')
+          return (
+            <li key={i}>
+              {where && <span className="msg__problem-where">{where}</span>}
+              {where && err.message && ' — '}
+              {err.message}
+              {err.hint && <span className="msg__problem-hint">Fix: {err.hint}</span>}
+            </li>
+          )
+        })}
+      </ul>
+    </details>
+  )
+}
 
 // ── Live clock hook ───────────────────────────────────────
 function useClock() {
@@ -76,28 +115,48 @@ export default function ChatView({ deviceId, onLogout }) {
   const ttsEnabledRef = useRef(ttsEnabled)
   useEffect(() => { ttsEnabledRef.current = ttsEnabled }, [ttsEnabled])
 
-  // Fails the outstanding "Thinking…" placeholder if no reply arrives.
-  const replyTimerRef = useRef(null)
+  // One timeout per outstanding request: requestId → timeout id. A single
+  // shared timer was cleared by ANY reply, so the answer to one message also
+  // cancelled the timeout of every other message still waiting.
+  //
+  // An entry exists exactly while its "Thinking…" placeholder does, and the
+  // map keeps send order, so its last key is the newest placeholder waiting.
+  const replyTimersRef = useRef(new Map())
 
-  const clearReplyTimer = useCallback(() => {
-    if (replyTimerRef.current) {
-      clearTimeout(replyTimerRef.current)
-      replyTimerRef.current = null
-    }
+  const clearReplyTimer = useCallback((requestId) => {
+    const timers = replyTimersRef.current
+    clearTimeout(timers.get(requestId))
+    timers.delete(requestId)
   }, [])
 
-  // Turns a trailing placeholder into an error. A no-op if the last message is
-  // not a placeholder, so a late reply that already landed is never overwritten.
-  const failPending = useCallback((reason) => {
+  const clearAllReplyTimers = useCallback(() => {
+    const timers = replyTimersRef.current
+    for (const id of timers.values()) clearTimeout(id)
+    timers.clear()
+  }, [])
+
+  // Turns one request's placeholder into an error. A no-op if that placeholder
+  // is already gone, so a reply that landed first is never overwritten.
+  const failPending = useCallback((requestId, reason) => {
     setMessages(prev => {
-      const last = prev[prev.length - 1]
-      if (!last || last.role !== 'ai' || !last.thinking) return prev
-      return [
-        ...prev.slice(0, -1),
-        { role: 'ai', text: reason, ts: Date.now(), isError: true },
-      ]
+      const i = findPending(prev, requestId)
+      if (i < 0) return prev
+      const next = [...prev]
+      next[i] = { role: 'ai', text: reason, ts: Date.now(), isError: true }
+      return next
     })
   }, [])
+
+  // (Re)starts a request's timeout. Map.set on an existing key keeps its
+  // position, so re-arming on progress does not disturb the send order.
+  const armReplyTimer = useCallback((requestId) => {
+    const timers = replyTimersRef.current
+    clearTimeout(timers.get(requestId))
+    timers.set(requestId, setTimeout(() => {
+      timers.delete(requestId)
+      failPending(requestId, 'No response from the server. Check your connection and try again.')
+    }, REPLY_TIMEOUT_MS))
+  }, [failPending])
 
   const messagesAreaRef = useRef(null)
   const chatInputRef = useRef(null)
@@ -120,36 +179,64 @@ export default function ChatView({ deviceId, onLogout }) {
     })
 
     onMessage((data) => {
-      // The server answered, so the placeholder is no longer stranded.
-      clearReplyTimer()
+      const timers = replyTimersRef.current
 
-      const text = data.response_text
+      // The request this frame is about. Current servers quote request_id
+      // back. Older ones send none, so their frame goes to the newest
+      // placeholder still waiting — the last "Thinking…" bubble, as before.
+      // A frame that does name a request is never redirected to another one.
+      const requestId = data.request_id || [...timers.keys()].pop()
 
-      // An error frame has no response text. The placeholder used to stay on
-      // screen as a permanent "Thinking…" because only a successful reply
-      // replaced it.
-      if (!text) {
-        if (data.error) {
-          setMessages(prev => {
-            const last = prev[prev.length - 1]
-            const errMsg = { role: 'ai', text: data.error, ts: Date.now(), isError: true }
-            return (last && last.role === 'ai' && last.thinking)
-              ? [...prev.slice(0, -1), errMsg]
-              : [...prev, errMsg]
-          })
-        }
+      // Progress: the server is still on it. Show what it is doing and restart
+      // that request's timeout, since it is evidently alive. Nothing else
+      // changes — the placeholder keeps waiting for its answer.
+      if (data.type === 'progress') {
+        if (!timers.has(requestId)) return   // answered, timed out or cleared
+        armReplyTimer(requestId)
+        setMessages(prev => {
+          const i = findPending(prev, requestId)
+          if (i < 0) return prev
+          const next = [...prev]
+          next[i] = { ...prev[i], progress: asText(data.message) }
+          return next
+        })
         return
       }
 
+      // Any other typed frame is not an answer. Untyped ones come from older
+      // servers, and are an answer only if they carry a response or an error.
+      if (data.type && data.type !== 'response') return
+      const text = asText(data.response_text)
+      if (!data.type && !text && !data.error) return
+
+      // The server answered, so the placeholder is no longer stranded.
+      clearReplyTimer(requestId)
+
+      const errors = Array.isArray(data.errors) ? data.errors.map(toProblem) : []
+      // An error frame has no response text. The placeholder used to stay on
+      // screen as a permanent "Thinking…" because only a successful reply
+      // replaced it.
+      const reply = {
+        role: 'ai',
+        text: text || asText(data.error) ||
+          (errors.length ? 'Something went wrong — details below.' : 'The server sent an empty reply.'),
+        ts: Date.now(),
+        isError: data.status === 'error' || (!text && !!data.error),
+        // Rendered as markdown even when it is an error; the client's own
+        // notices (timeout, offline) are not.
+        fromServer: true,
+        errors,
+      }
+
       setMessages(prev => {
-        const last = prev[prev.length - 1]
-        if (last && last.role === 'ai' && last.thinking) {
-          return [...prev.slice(0, -1), { role: 'ai', text, ts: Date.now() }]
-        }
-        return [...prev, { role: 'ai', text, ts: Date.now() }]
+        const i = findPending(prev, requestId)
+        if (i < 0) return [...prev, reply]
+        const next = [...prev]
+        next[i] = reply
+        return next
       })
 
-      if (ttsEnabledRef.current) {
+      if (text && ttsEnabledRef.current) {
         speak(
           text,
           (vol) => setOrbAmplitude(vol * 4),
@@ -159,10 +246,10 @@ export default function ChatView({ deviceId, onLogout }) {
     })
 
     ensureConnection()
-  }, [onLogout, clearReplyTimer])
+  }, [onLogout, armReplyTimer, clearReplyTimer])
 
-  // Don't leave a timer running past unmount.
-  useEffect(() => clearReplyTimer, [clearReplyTimer])
+  // Don't leave timers running past unmount.
+  useEffect(() => clearAllReplyTimers, [clearAllReplyTimers])
 
   // ── Keyboard shortcuts ──────────────────────────────────
   useEffect(() => {
@@ -174,11 +261,13 @@ export default function ChatView({ deviceId, onLogout }) {
       if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
         e.preventDefault()
         setMessages([])
+        // Their placeholders are gone, so their timeouts go too.
+        clearAllReplyTimers()
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [])
+  }, [clearAllReplyTimers])
 
   // ── Auto-scroll ────────────────────────────────────────
   // Scrolls the container directly rather than calling scrollIntoView on a
@@ -232,6 +321,10 @@ export default function ChatView({ deviceId, onLogout }) {
     // Sending is an explicit signal the user wants to see what comes back.
     userScrolledUpRef.current = false
 
+    // Sent first, because the placeholder needs the request id that the
+    // server's progress frames and answer will quote back.
+    const { status, requestId } = sendMessage(text, attachments)
+
     setMessages(prev => [
       ...prev,
       {
@@ -240,24 +333,18 @@ export default function ChatView({ deviceId, onLogout }) {
         ts: Date.now(),
         attachments: attachments.length > 0 ? attachments : undefined,
       },
-      { role: 'ai', text: '', thinking: true, ts: Date.now() },
+      { role: 'ai', text: '', thinking: true, requestId, progress: '', ts: Date.now() },
     ])
-
-    const status = sendMessage(text, attachments)
 
     if (status === 'offline') {
       // Nothing is going to reconnect by itself, so say so now rather than
       // showing a placeholder that can never resolve.
-      failPending('Not connected — your message was not sent. Sign in again and retry.')
+      failPending(requestId, 'Not connected — your message was not sent. Sign in again and retry.')
       return
     }
 
-    clearReplyTimer()
-    replyTimerRef.current = setTimeout(() => {
-      replyTimerRef.current = null
-      failPending('No response from the server. Check your connection and try again.')
-    }, REPLY_TIMEOUT_MS)
-  }, [clearReplyTimer, failPending])
+    armReplyTimer(requestId)
+  }, [armReplyTimer, failPending])
 
   // ── Vision capture → attach to chat (mimics file upload flow) ──
   const handleVisionCapture = useCallback((file, label) => {
@@ -271,6 +358,11 @@ export default function ChatView({ deviceId, onLogout }) {
     // Focus chat so user can immediately type a question about it
     setTimeout(() => chatInputRef.current?.focus(), 50)
   }, [])
+
+  // The server pushed a frame or stream to this device. On narrow screens the
+  // vision column is a hidden drawer, so open it — otherwise the answer's
+  // picture would arrive somewhere the user cannot see.
+  const handleVisionActivity = useCallback(() => setVisionOpen(true), [])
 
   // ── Mic volume → orb ──────────────────────────────────
   const handleMicVolume = useCallback((vol) => {
@@ -440,15 +532,24 @@ export default function ChatView({ deviceId, onLogout }) {
                 </span>
                 <div className="msg__bubble">
                   {msg.thinking ? (
-                    <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>
-                      Thinking…
+                    // What the server says it is doing, once it says anything.
+                    <span className={`msg__thinking${msg.progress ? ' msg__thinking--progress' : ''}`}>
+                      {msg.progress || 'Thinking…'}
                     </span>
-                  ) : msg.isError ? (
-                    <span style={{ color: '#ff8a8a' }}>{msg.text}</span>
+                  ) : msg.isError && !msg.fromServer ? (
+                    // The client's own notices (timeout, offline): plain text.
+                    <span className="msg__error-text">{msg.text}</span>
                   ) : msg.role === 'ai' ? (
                     // Only the assistant's text is markdown. The user's own
                     // message is shown exactly as typed.
-                    <Markdown>{msg.text}</Markdown>
+                    <>
+                      {msg.isError ? (
+                        <div className="msg__error-text"><Markdown>{msg.text}</Markdown></div>
+                      ) : (
+                        <Markdown>{msg.text}</Markdown>
+                      )}
+                      {msg.errors?.length > 0 && <ProblemList errors={msg.errors} />}
+                    </>
                   ) : (
                     msg.text
                   )}
@@ -493,6 +594,7 @@ export default function ChatView({ deviceId, onLogout }) {
         <VisionManager
           ref={visionMgrRef}
           onCaptureToChat={handleVisionCapture}
+          onActivity={handleVisionActivity}
         />
       </aside>
 

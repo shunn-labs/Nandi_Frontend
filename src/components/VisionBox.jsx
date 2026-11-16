@@ -5,7 +5,7 @@ import { startConsumer } from '../lib/webrtcConsumer.js'
  * VisionBox — a single tile in the right column.
  *
  * box.type === 'stream'  → WebRTC consumer with auto-reconnect + manual refresh
- * box.type === 'frame'   → static base64 image
+ * box.type === 'frame'   → static base64 image (box.mime, JPEG if unset)
  * box.type === 'camera'  → local producer preview (uses producer ref for switching)
  *
  * Buttons:
@@ -76,12 +76,17 @@ export default function VisionBox({ box, onClose, onCapture }) {
     const canvas = document.createElement('canvas')
     const ctx = canvas.getContext('2d')
 
+    // Captures are JPEG, except that a PNG frame stays PNG: re-encoding it
+    // would blur sharp overlays and turn any transparency black.
+    const outType = box.type === 'frame' && box.mime === 'image/png' ? 'image/png' : 'image/jpeg'
+
     const finalize = (blob) => {
       if (!blob) return
       const safeLabel = (box.label || box.streamId || 'capture')
         .replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40)
-      const filename = `capture_${safeLabel}_${Date.now()}.jpg`
-      const file = new File([blob], filename, { type: 'image/jpeg' })
+      const ext = outType === 'image/png' ? 'png' : 'jpg'
+      const filename = `capture_${safeLabel}_${Date.now()}.${ext}`
+      const file = new File([blob], filename, { type: outType })
       onCapture?.(file, box.label)
     }
 
@@ -92,9 +97,9 @@ export default function VisionBox({ box, onClose, onCapture }) {
         canvas.width = img.naturalWidth
         canvas.height = img.naturalHeight
         ctx.drawImage(img, 0, 0)
-        canvas.toBlob(finalize, 'image/jpeg', 0.92)
+        canvas.toBlob(finalize, outType, 0.92)
       }
-      img.src = `data:image/jpeg;base64,${box.imageB64}`
+      img.src = `data:${box.mime || 'image/jpeg'};base64,${box.imageB64}`
       return
     }
 
@@ -103,7 +108,7 @@ export default function VisionBox({ box, onClose, onCapture }) {
     canvas.width = video.videoWidth
     canvas.height = video.videoHeight
     ctx.drawImage(video, 0, 0)
-    canvas.toBlob(finalize, 'image/jpeg', 0.92)
+    canvas.toBlob(finalize, outType, 0.92)
   }
 
   // ── Refresh stream consumer ──
@@ -178,7 +183,7 @@ export default function VisionBox({ box, onClose, onCapture }) {
         {box.type === 'frame' ? (
           <img
             className="vbox__media"
-            src={`data:image/jpeg;base64,${box.imageB64}`}
+            src={`data:${box.mime || 'image/jpeg'};base64,${box.imageB64}`}
             alt={box.label}
           />
         ) : (

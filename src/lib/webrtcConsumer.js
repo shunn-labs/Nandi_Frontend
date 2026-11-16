@@ -441,7 +441,10 @@ export async function startProducer({
       // To discover the exact field your server uses, uncomment:
       // console.log('ANSWER MSG:', JSON.stringify(msg))
 
-      let peerId = msg.from_stream || msg.from || msg.consumer_id || msg.to
+      // The vision server names the sender `from_consumer`. Without it first,
+      // every answer fell through to the FIFO guess below, which pairs the
+      // wrong peer as soon as two consumers join at once.
+      let peerId = msg.from_consumer || msg.from_stream || msg.from || msg.consumer_id || msg.to
       let pc = peerId ? pcs[peerId] : null
 
       // FIFO fallback: oldest peer still awaiting an answer

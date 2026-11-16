@@ -4,7 +4,7 @@
 
 // Shared with visionControl.js so both sockets identify this browser the same
 // way — see src/lib/clientId.js for why that matters to the planner.
-import { getClientId } from './clientId.js'
+import { getClientId, getDeviceName } from './clientId.js'
 import { API_BASE, CHAT_WS, HEALTH_URL } from './endpoints.js'
 
 // Close codes the server uses to reject a connection outright. Reconnecting
@@ -179,11 +179,24 @@ export function resetConnection() {
 
 // ── Send a chat message ──────────────────────────────────
 
+// The server echoes request_id on every progress frame and on the final answer,
+// which is how a reply finds its own placeholder when several are in flight.
+// crypto.randomUUID only exists in secure contexts (https, localhost), so a
+// phone reaching the dev server over plain http on the LAN needs the fallback.
+function newRequestId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`
+}
+
 /**
  * Send a chat message.
  *
- * Returns what actually happened, because the caller draws a "Thinking…"
- * placeholder and needs to know whether a reply is even possible:
+ * Returns `{ status, requestId }`. `requestId` is what the server will quote
+ * back on this message's progress frames and answer. `status` says what
+ * actually happened, because the caller draws a "Thinking…" placeholder and
+ * needs to know whether a reply is even possible:
  *
  *   'sent'    went out on an open socket
  *   'queued'  socket is down but reconnecting — it will go out on reconnect
@@ -193,22 +206,27 @@ export function resetConnection() {
  *             forever. This is what used to happen silently.
  */
 export function sendMessage(text, attachments = []) {
+  const requestId = newRequestId()
   const payload = {
     query: text,
     client_id: getClientId(),
+    device_name: getDeviceName(),
+    request_id: requestId,
     attachments,
   }
 
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(payload))
-    return 'sent'
+    return { status: 'sent', requestId }
   }
 
-  if (stopped) return 'offline'
+  if (stopped) return { status: 'offline', requestId }
 
+  // The payload is queued whole, so it still carries its request_id when it
+  // is flushed on reconnect.
   pendingQueue.push(payload)
   ensureConnection()
-  return 'queued'
+  return { status: 'queued', requestId }
 }
 
 // ── Upload a file ────────────────────────────────────────
