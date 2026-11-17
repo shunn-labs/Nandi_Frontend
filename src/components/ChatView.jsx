@@ -92,7 +92,7 @@ function promptMessage(f) {
 
 function eventText(f) {
   const d = (f.data && typeof f.data === 'object') ? f.data : {}
-  const who = asText(d.name || d.title || d.number || 'someone')
+  const who = asText(d.caller || d.from || d.name || d.number || 'someone')
   switch (f.kind) {
     case 'call.incoming': return `📞 ${who} is calling`
     case 'call.missed': return `📞 Missed call from ${who}`
