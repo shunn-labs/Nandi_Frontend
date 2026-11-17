@@ -5,6 +5,8 @@ import ChatInput from './ChatInput.jsx'
 import VisionManager from './VisionManager.jsx'
 import SettingsPanel from './SettingsPanel.jsx'
 import Markdown from './Markdown.jsx'
+import PromptCard from './PromptCard.jsx'
+import ActivityCard, { applyActivity } from './ActivityCard.jsx'
 import { IconSettings, IconLogs } from './Icons.jsx'
 import {
   ensureConnection,
@@ -14,6 +16,7 @@ import {
   sendMessage,
 } from '../lib/wsAdapter.js'
 import { speak, stop as stopTts } from '../lib/ttsPlayer.js'
+import { onPhoneFrame, onPhoneStatus, sendPhone } from '../lib/phoneChannel.js'
 
 // How close to the bottom counts as "following the conversation". Below this
 // distance a new message scrolls into view; above it the user is reading
@@ -68,6 +71,43 @@ function ProblemList({ errors }) {
   )
 }
 
+// ── Phone cards (approvals, questions, live steps, events) ────────────────
+// A card goes before a pending "Thinking…" placeholder, so the reply still
+// replaces the placeholder and lands under the card.
+function insertCard(list, card) {
+  const last = list[list.length - 1]
+  return (last && last.role === 'ai' && last.thinking)
+    ? [...list.slice(0, -1), card, last]
+    : [...list, card]
+}
+
+function promptMessage(f) {
+  return {
+    role: 'prompt', kind: f.kind === 'question' ? 'question' : 'approval', id: asText(f.id),
+    device: asText(f.device), what: asText(f.what), why: asText(f.why),
+    options: Array.isArray(f.options) ? f.options.map(asText) : [], allowText: !!f.allow_text,
+    expiresAt: Number(f.expires_at) || Date.now() + 60000, status: 'open', ts: Date.now(),
+  }
+}
+
+function eventText(f) {
+  const d = (f.data && typeof f.data === 'object') ? f.data : {}
+  const who = asText(d.name || d.title || d.number || 'someone')
+  switch (f.kind) {
+    case 'call.incoming': return `📞 ${who} is calling`
+    case 'call.missed': return `📞 Missed call from ${who}`
+    case 'message': {
+      const app = asText(d.app)
+      const text = asText(d.text)
+      return `💬 ${app ? app + ' · ' : ''}${who}${text ? ': ' + text : ''}`
+    }
+    case 'battery.low': return `🔋 Battery low${d.level != null ? ` (${asText(d.level)}%)` : ''}`
+    default: return `📱 ${asText(f.kind)}`
+  }
+}
+
+const deviceName = (d) => (d === 'tab' ? 'tablet' : (d || 'phone'))
+
 // ── Live clock hook ───────────────────────────────────────
 function useClock() {
   const [now, setNow] = useState(new Date())
@@ -96,6 +136,7 @@ function useClock() {
 export default function ChatView({ deviceId, onLogout }) {
   const [messages, setMessages] = useState([])
   const [connected, setConnected] = useState(false)
+  const [phone, setPhone] = useState({ connected: false, devices: [] })
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [logsOpen, setLogsOpen] = useState(false)
   const [visionOpen, setVisionOpen] = useState(false)
@@ -247,6 +288,60 @@ export default function ChatView({ deviceId, onLogout }) {
 
     ensureConnection()
   }, [onLogout, armReplyTimer, clearReplyTimer])
+
+  // ── Phone channel (android server /ui) ─────────────────
+  useEffect(() => onPhoneStatus(setPhone), [])
+
+  useEffect(() => onPhoneFrame((f) => {
+    switch (f.type) {
+      case 'ready':
+        setMessages(prev => {
+          let next = prev
+          for (const p of (Array.isArray(f.prompts) ? f.prompts : [])) {
+            if (!next.some(m => m.role === 'prompt' && m.id === p.id)) next = insertCard(next, promptMessage(p))
+          }
+          for (const a of (Array.isArray(f.activity) ? f.activity : [])) next = applyActivity(next, a)
+          // Prompts that closed while this window was disconnected.
+          const open = new Set((f.prompts || []).map(p => p.id))
+          return next.map(m => (m.role === 'prompt' && (m.status === 'open' || m.status === 'sent') && !open.has(m.id))
+            ? { ...m, status: 'expired' } : m)
+        })
+        break
+      case 'prompt':
+        setMessages(prev => (prev.some(m => m.role === 'prompt' && m.id === f.id) ? prev : insertCard(prev, promptMessage(f))))
+        break
+      case 'prompt_closed':
+        setMessages(prev => prev.map(m => (m.role === 'prompt' && m.id === f.id ? { ...m, status: asText(f.outcome) || 'closed' } : m)))
+        break
+      case 'activity': {
+        // A phone task is alive: keep the Brain reply that is waiting on it from timing out.
+        const pending = [...replyTimersRef.current.keys()].pop()
+        if (pending) armReplyTimer(pending)
+        setMessages(prev => applyActivity(prev, f))
+        break
+      }
+      case 'event':
+        setMessages(prev => insertCard(prev, { role: 'event', device: asText(f.device), text: eventText(f), ts: Date.now() }))
+        break
+      case 'stop_ack':
+        if (!f.stopped) {
+          setMessages(prev => prev.map(m => (m.role === 'activity' && m.device === f.device && m.stopping
+            ? { ...m, stopping: false } : m)))
+        }
+        break
+      default:
+    }
+  }), [armReplyTimer])
+
+  const handlePromptAnswer = useCallback((id, frame) => {
+    const sent = sendPhone({ ...frame, id })
+    setMessages(prev => prev.map(m => (m.role === 'prompt' && m.id === id ? { ...m, status: sent ? 'sent' : 'not sent' } : m)))
+  }, [])
+
+  const handleStopTask = useCallback((item) => {
+    if (!sendPhone({ type: 'stop', device: item.device })) return
+    setMessages(prev => prev.map(m => (m.role === 'activity' && m.taskId === item.taskId ? { ...m, stopping: true } : m)))
+  }, [])
 
   // Don't leave timers running past unmount.
   useEffect(() => clearAllReplyTimers, [clearAllReplyTimers])
@@ -450,6 +545,11 @@ export default function ChatView({ deviceId, onLogout }) {
             <span className={`app-header__dot${connected ? '' : ' app-header__dot--off'}`} />
             {connected ? 'Online' : 'Offline'}
           </span>
+          {phone.devices.length > 0 && (
+            <span className="app-header__phone app-header__phone--on" title={phone.devices.map(d => `${d.id}: ${d.model || ''}`).join('\n')}>
+              📱 {phone.devices.map(d => deviceName(d.id)).join(', ')} online
+            </span>
+          )}
         </div>
 
         <div className="app-header__center">
@@ -525,7 +625,14 @@ export default function ChatView({ deviceId, onLogout }) {
               </div>
             )}
 
-            {messages.map((msg, i) => (
+            {messages.map((msg, i) => (msg.role === 'prompt' || msg.role === 'activity' || msg.role === 'event') ? (
+              <div key={msg.id || msg.taskId || i} className="msg msg--ai">
+                <span className="msg__label">{deviceName(msg.device).replace(/^./, c => c.toUpperCase())}</span>
+                {msg.role === 'prompt' && <PromptCard msg={msg} onAnswer={handlePromptAnswer} />}
+                {msg.role === 'activity' && <ActivityCard item={msg} onStop={handleStopTask} />}
+                {msg.role === 'event' && <div className="phone-event">{msg.text}</div>}
+              </div>
+            ) : (
               <div key={i} className={`msg msg--${msg.role}`}>
                 <span className="msg__label">
                   {msg.role === 'user' ? 'You' : 'Nandi'}

@@ -44,6 +44,14 @@ export const LOGS_WS = `${WS_BASE}/ws/logs`
 export const HEALTH_URL = `${API_BASE}/health`
 
 /**
+ * The android server's channel for Nandi windows: approvals, questions and live steps from the
+ * user's phones, plus phone events. Same login token as Brain; reached through Brain's domain.
+ */
+export const ANDROID_UI_WS =
+  import.meta.env.VITE_ANDROID_UI_WS ||
+  (import.meta.env.DEV ? 'ws://127.0.0.1:9110/ui' : 'wss://brain.shunnlabs.in/android/ui')
+
+/**
  * Vision server signaling URL.
  *
  * The localStorage override is kept — it is documented in VISION_README and is

@@ -1624,3 +1624,98 @@ body {
 .login-page__hint--error {
   color: #ff8a8a;
 }
+
+/* ── Approval / question cards (a device needs you; see PromptCard.jsx) ───── */
+.prompt-card {
+  background: var(--bg-raised);
+  border: 1px solid var(--amber);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  min-width: min(360px, 100%);
+  max-width: 100%;
+}
+.prompt-card--question { border-color: var(--cyan-dim); }
+.prompt-card--done { border-color: var(--border); opacity: 0.85; }
+.prompt-card__head {
+  display: flex; justify-content: space-between; gap: 12px;
+  font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 6px;
+}
+.prompt-card__timer { font-family: var(--font-mono); color: var(--amber); }
+.prompt-card__what { color: var(--text-primary); font-weight: 500; line-height: 1.4; }
+.prompt-card__why { color: var(--text-secondary); font-size: 0.85rem; margin-top: 4px; }
+.prompt-card__actions { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
+.prompt-card__actions--wrap { flex-wrap: wrap; justify-content: flex-start; }
+.prompt-card__btn {
+  background: var(--bg-hover); color: var(--text-primary);
+  border: 1px solid var(--border-light); border-radius: var(--radius-sm);
+  padding: 7px 14px; font: inherit; font-size: 0.88rem; cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+.prompt-card__btn:hover:not(:disabled) { border-color: var(--cyan); }
+.prompt-card__btn:disabled { opacity: 0.5; cursor: default; }
+.prompt-card__btn--allow { background: var(--green-dim); border-color: var(--green); }
+.prompt-card__btn--deny { border-color: var(--red); }
+.prompt-card__reply { display: flex; gap: 8px; margin-top: 10px; }
+.prompt-card__reply input {
+  flex: 1; min-width: 0; background: var(--bg-base); color: var(--text-primary);
+  border: 1px solid var(--border-light); border-radius: var(--radius-sm); padding: 7px 10px; font: inherit;
+}
+.prompt-card__outcome { margin-top: 10px; font-size: 0.85rem; color: var(--text-secondary); }
+
+/* ── Live device activity (what the phone agent is doing; see ActivityCard.jsx) ── */
+.activity-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-light);
+  border-left: 3px solid var(--cyan);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  min-width: min(380px, 100%);
+  max-width: 100%;
+  font-size: 0.88rem;
+}
+.activity-card--success { border-left-color: var(--green); }
+.activity-card--failed { border-left-color: var(--red); }
+.activity-card--stopped { border-left-color: var(--amber); }
+.activity-card__head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.activity-card__title { display: flex; align-items: center; gap: 8px; color: var(--text-primary); font-weight: 500; }
+.activity-card__spinner {
+  width: 10px; height: 10px; border-radius: 50%;
+  border: 2px solid var(--cyan); border-top-color: transparent;
+  animation: activity-spin 0.8s linear infinite;
+}
+@keyframes activity-spin { to { transform: rotate(360deg); } }
+.activity-card__toggle {
+  background: none; border: none; color: var(--cyan-dim); cursor: pointer; font: inherit; font-size: 0.8rem; padding: 0;
+}
+.activity-card__toggle:hover { color: var(--cyan); }
+.activity-card__goal { color: var(--text-secondary); margin-top: 4px; }
+.activity-card__plan { margin-top: 6px; }
+.activity-card__plan pre {
+  white-space: pre-wrap; font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-secondary);
+  background: var(--bg-base); border-radius: var(--radius-sm); padding: 8px; margin-top: 4px;
+}
+.activity-card__steps { list-style: none; margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.activity-step { display: grid; grid-template-columns: 16px 1fr; column-gap: 6px; color: var(--text-primary); }
+.activity-step__mark { color: var(--text-muted); text-align: center; }
+.activity-step--ok .activity-step__mark { color: var(--green); }
+.activity-step--error .activity-step__mark { color: var(--red); }
+.activity-step--running .activity-step__text { color: var(--cyan); }
+.activity-step__note { grid-column: 2; color: var(--text-muted); font-size: 0.8rem; }
+.activity-card__foot { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
+.activity-card__answer { color: var(--text-secondary); }
+.activity-card__meta { color: var(--text-muted); font-size: 0.78rem; margin-top: 2px; font-family: var(--font-mono); }
+.activity-card__stop {
+  background: none; border: 1px solid var(--red); color: var(--text-primary); border-radius: var(--radius-sm);
+  padding: 2px 10px; font: inherit; font-size: 0.78rem; cursor: pointer;
+}
+.activity-card__stop:disabled { opacity: 0.6; cursor: default; }
+
+/* ── Phone events (missed call, new message, low battery) ── */
+.phone-event {
+  display: inline-flex; align-items: baseline; gap: 8px; max-width: 100%;
+  background: var(--bg-surface); border: 1px solid var(--border-light); border-radius: var(--radius-sm);
+  padding: 6px 10px; font-size: 0.85rem; color: var(--text-secondary);
+}
+.phone-event__device { color: var(--text-muted); font-size: 0.75rem; font-family: var(--font-mono); }
+.app-header__phone { margin-left: 10px; font-size: 0.78rem; color: var(--text-muted); white-space: nowrap; }
+.app-header__phone--on { color: var(--text-secondary); }
