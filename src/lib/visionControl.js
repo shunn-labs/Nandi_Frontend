@@ -1,8 +1,16 @@
 // ═══════════════════════════════════════════════════════════
-//  visionControl.js  –  WebSocket to brain server for vision commands
+//  visionControl.js  –  this browser's display channel to the brain
 //
 //  Vision agent → brain server → this WebSocket → browser action.
 //  The browser identifies itself with a client_id (e.g. web_react_pc).
+//
+//  The same socket carries everything a capability needs from the user, from
+//  any MCP server or brain feature (Brain's manager/interaction.py):
+//    prompt / prompt_closed   cards that wait for an answer (Allow / Deny, a form)
+//    activity                 a live job card (steps, outcome, Stop)
+//    devices / event          what each capability has connected; things that happened
+//    ui_snapshot              all of the above when this socket registers
+//  Subscribe with onUiFrame(); answer with sendDisplay().
 //
 //  Hardened against:
 //   - React StrictMode double-mount (duplicate sockets in dev)
@@ -34,6 +42,33 @@ let pingTimer = null
 // Why the server refused to register us. A refusal stops retrying, so without
 // this the column could only show a grey dot and no reason.
 let lastError = ''
+
+// Frames for the chat's cards (see the header). `ui_disconnected` is synthesised
+// here when the socket drops, so device status never shows stale.
+const UI_ACTIONS = new Set([
+  'prompt', 'prompt_closed', 'prompt_invalid', 'activity', 'activity_stop_ack',
+  'devices', 'event', 'ui_snapshot',
+])
+const uiListeners = new Set()
+
+function emitUi(frame) {
+  for (const cb of uiListeners) {
+    try { cb(frame) } catch (err) { console.error('[vision-ctrl] ui listener failed', err) }
+  }
+}
+
+/** Cards, live activity, device status and events from the brain. Returns unsubscribe. */
+export function onUiFrame(cb) {
+  uiListeners.add(cb)
+  return () => uiListeners.delete(cb)
+}
+
+/** Answer a card or stop a job. True if it went out on an open, registered socket. */
+export function sendDisplay(frame) {
+  if (!ws || !connected || ws.readyState !== WebSocket.OPEN) return false
+  ws.send(JSON.stringify(frame))
+  return true
+}
 
 function getToken() {
   return localStorage.getItem('user_token')
@@ -151,6 +186,11 @@ function connect() {
       return
     }
 
+    if (msg.action && UI_ACTIONS.has(msg.action)) {
+      emitUi(msg)
+      return
+    }
+
     // Forward vision commands to handler
     //   { action: 'show_frame',  image_b64, mime, label, wid, request_id, camera }
     //   { action: 'show_stream', stream_id, label, wid, request_id }
@@ -169,6 +209,7 @@ function connect() {
     if (ws !== sock) return   // a newer socket already took over — ignore
     connected = false
     stopPing()
+    emitUi({ action: 'ui_disconnected' })
     if (FATAL_CLOSE_CODES.has(event.code)) {
       console.warn(`[vision-ctrl] rejected (${event.code}) — not retrying`)
       stopped = true
@@ -217,4 +258,5 @@ export function disconnect() {
     try { sock.close() } catch {}
   }
   connected = false
+  emitUi({ action: 'ui_disconnected' })
 }

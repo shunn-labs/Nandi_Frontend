@@ -5,7 +5,6 @@ import ChatView from './components/ChatView.jsx'
 import { getDeviceName } from './lib/clientId.js'
 import { disconnect, resetConnection } from './lib/wsAdapter.js'
 import { disconnect as disconnectVisionControl } from './lib/visionControl.js'
-import { closePhoneChannel } from './lib/phoneChannel.js'
 
 function getDeviceId() {
   // Shared with clientId.js, which derives the client_id both sockets send.
@@ -48,7 +47,6 @@ export default function App() {
     // login's VisionManager starts it afresh.
     disconnectVisionControl()
     // Same token again: the phones' approvals must not keep arriving after sign-out.
-    closePhoneChannel()
     setIsLoggedIn(false)
   }, [])
 
