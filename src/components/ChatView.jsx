@@ -101,11 +101,12 @@ function eventMessage(f) {
            device: asText(e.device), text: text ? `${title} — ${text}` : title, ts: Date.now() }
 }
 
-// What a capability calls its devices, for the header ("📱 Phone online").
-const DOMAIN_ICON = { android: '📱' }
+// What a capability calls its devices, for the header ("📱 Phone online", "🖥️ Ubuntu PC online").
+const DOMAIN_ICON = { android: '📱', ubuntu_control: '🖥️' }
 
-const deviceName = (d) => (d === 'tab' ? 'tablet' : (d || 'phone'))
-const SOURCE_LABEL = { android: 'Phone' }
+const DEVICE_NAME = { tab: 'tablet', tablet: 'tablet', pc: 'PC' }
+const deviceName = (d) => DEVICE_NAME[d] || d || 'phone'
+const SOURCE_LABEL = { android: 'Phone', ubuntu_control: 'PC' }
 const cardLabel = (m) => (m.device ? deviceName(m.device).replace(/^./, c => c.toUpperCase())
   : SOURCE_LABEL[m.source] || (m.source ? m.source.replace(/^./, c => c.toUpperCase()) : 'Nandi'))
 
