@@ -11,12 +11,7 @@
 
 // Default follows the build mode instead of always being production — a dev
 // build used to open WebRTC signaling against the live vision server.
-import { getVisionSignalUrl } from './endpoints.js'
-
-const ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-]
+import { getVisionSignalUrl, ICE_SERVERS } from './endpoints.js'
 
 function getSignalUrl() {
   return getVisionSignalUrl()

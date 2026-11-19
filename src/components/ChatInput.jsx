@@ -97,7 +97,9 @@ const ChatInput = forwardRef(function ChatInput({
       const noDevice = err?.name === 'NotFoundError'
 
       setMicError(
-        denied
+        err?.code === 'STT_UNAVAILABLE'
+          ? err.message
+          : denied
           ? 'Microphone blocked. Allow mic access for this site, then try again.'
           : noDevice
             ? 'No microphone found.'

@@ -46,8 +46,7 @@ export function getBaseUrl() {
 /**
  * API base for callers that run before any socket exists (i.e. Login).
  *
- * The login page used to hardcode https://api.shuun.site, so signing in
- * against a local backend was impossible.
+ * Resolved from /config.js or the page origin (see endpoints.js).
  */
 export async function getApiBaseUrl() {
   return API_BASE

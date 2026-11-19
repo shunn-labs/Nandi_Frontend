@@ -19,7 +19,7 @@ export default function DeviceSetup({ onDeviceSet }) {
       </p>
       <input
         className="device-setup__input"
-        placeholder="e.g. somnath-pc, my-phone, office-tab"
+        placeholder="e.g. home-pc, my-phone, office-tab"
         value={name}
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}

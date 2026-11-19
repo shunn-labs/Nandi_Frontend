@@ -1,5 +1,10 @@
 // ═══════════════════════════════════════════════════════════
 //  ttsPlayer.js  –  Text-to-speech via backend proxy (OpenAI TTS)
+//
+//  Server voice needs an OpenAI key. When the brain answers 501 (no TTS
+//  provider) or the request fails, fall back to the browser's built-in
+//  speechSynthesis. A 501 is remembered for the session so we don't ask again
+//  for every message.
 // ═══════════════════════════════════════════════════════════
 
 import { getBaseUrl } from './wsAdapter.js'
@@ -10,6 +15,49 @@ let volumeCallback = null
 let audioContext = null
 let analyser = null
 let rafId = null
+let serverTtsUnavailable = false
+let browserUtterance = null
+
+// ── Browser speech fallback ──────────────────────────────
+
+function speakWithBrowser(text, onEnd) {
+  const synth = typeof window !== 'undefined' ? window.speechSynthesis : null
+  if (!synth || !text) {
+    if (onEnd) onEnd()
+    return
+  }
+  try {
+    synth.cancel()
+    const u = new SpeechSynthesisUtterance(text)
+    browserUtterance = u
+    isPlaying = true
+    // No audio graph to analyse; give the orb a gentle pulse instead.
+    let t = 0
+    const pulse = () => {
+      if (!isPlaying || browserUtterance !== u) return
+      t += 1
+      if (volumeCallback) volumeCallback(0.08 + 0.06 * Math.abs(Math.sin(t / 6)))
+      rafId = requestAnimationFrame(pulse)
+    }
+    const done = () => {
+      if (browserUtterance !== u) return
+      browserUtterance = null
+      isPlaying = false
+      cancelAnimationFrame(rafId)
+      if (volumeCallback) volumeCallback(0)
+      volumeCallback = null
+      if (onEnd) onEnd()
+    }
+    u.onend = done
+    u.onerror = done
+    synth.speak(u)
+    pulse()
+  } catch (err) {
+    console.error('[tts] browser speech failed:', err)
+    isPlaying = false
+    if (onEnd) onEnd()
+  }
+}
 
 function getToken() {
   return localStorage.getItem('user_token')
@@ -45,6 +93,11 @@ export async function speak(text, onVolume, onEnd) {
 
   volumeCallback = onVolume || null
 
+  if (serverTtsUnavailable) {
+    speakWithBrowser(text, onEnd)
+    return
+  }
+
   const token = getToken()
   const baseUrl = getBaseUrl()
 
@@ -58,6 +111,12 @@ export async function speak(text, onVolume, onEnd) {
       body: JSON.stringify({ text }),
     })
 
+    if (res.status === 501) {
+      serverTtsUnavailable = true
+      console.info('[tts] server voice not configured; using browser speech')
+      speakWithBrowser(text, onEnd)
+      return
+    }
     if (!res.ok) throw new Error(`TTS failed: ${res.status}`)
 
     const arrayBuffer = await res.arrayBuffer()
@@ -88,9 +147,9 @@ export async function speak(text, onVolume, onEnd) {
 
     currentAudio = { source, context: audioContext }
   } catch (err) {
-    console.error('[tts] failed:', err)
+    console.error('[tts] failed, using browser speech:', err)
     isPlaying = false
-    if (onEnd) onEnd()
+    speakWithBrowser(text, onEnd)
   }
 }
 
@@ -100,6 +159,11 @@ export function stop() {
   isPlaying = false
   cancelAnimationFrame(rafId)
   volumeCallback = null
+
+  if (browserUtterance) {
+    browserUtterance = null
+    try { window.speechSynthesis?.cancel() } catch {}
+  }
 
   if (currentAudio) {
     try { currentAudio.source.stop() } catch {}

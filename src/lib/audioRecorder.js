@@ -175,6 +175,11 @@ async function transcribe(blob) {
     body: form,
   })
 
+  if (res.status === 501) {
+    const err = new Error('Voice input needs an OpenAI or Groq key on the Nandi server.')
+    err.code = 'STT_UNAVAILABLE'
+    throw err
+  }
   if (!res.ok) throw new Error(`STT failed: ${res.status}`)
 
   const data = await res.json()

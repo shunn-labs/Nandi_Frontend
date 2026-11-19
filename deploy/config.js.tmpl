@@ -1,0 +1,9 @@
+// Rendered by Caddy at request time from the container environment.
+// Empty values mean "use the defaults" (same origin as this page).
+window.__NANDI_CONFIG__ = {
+  productName: {{ env "NANDI_PRODUCT_NAME" | default "Nandi" | toJson }},
+  apiBase: {{ env "NANDI_PUBLIC_API_BASE" | toJson }},
+  visionSignalUrl: {{ env "NANDI_PUBLIC_VISION_SIGNAL_URL" | toJson }},
+  googleClientId: {{ env "NANDI_GOOGLE_CLIENT_ID" | toJson }},
+  iceServers: {{ env "NANDI_PUBLIC_ICE_SERVERS" | default "[]" }}
+};

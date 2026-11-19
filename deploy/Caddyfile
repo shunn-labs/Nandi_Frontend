@@ -1,0 +1,67 @@
+# Nandi gateway. Every value comes from env so one image serves any install.
+#
+# NANDI_SITE_ADDRESS examples
+#   :80                    plain HTTP (localhost, or behind your own proxy/tunnel)
+#   https://192.168.1.20   LAN IP, self-signed certificate from Caddy's local CA
+#   nandi.example.com      public domain, automatic Let's Encrypt certificate
+{
+	# Admin API only on loopback inside the container (used by the healthcheck).
+	admin 127.0.0.1:2019
+	# Clients send no SNI when the address is an IP (LAN mode); without this
+	# Caddy can't pick the certificate and the TLS handshake fails.
+	default_sni {$NANDI_TLS_DEFAULT_SNI:localhost}
+	log default {
+		exclude admin.api
+	}
+}
+
+{$NANDI_SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	# Runtime config for the browser app.
+	handle /config.js {
+		root * /srv
+		templates {
+			mime text/javascript application/javascript
+		}
+		header Content-Type "application/javascript; charset=utf-8"
+		header Cache-Control "no-store"
+		file_server
+	}
+
+	# Brain: REST, auth, websockets (chat, logs, vision-control), health.
+	@brain path /api/* /auth/* /ws/* /health
+	handle @brain {
+		reverse_proxy {$NANDI_BRAIN_UPSTREAM:brain:8000} {
+			# Stream websocket/SSE frames immediately.
+			flush_interval -1
+		}
+	}
+
+	# Vision server: WebRTC signaling + vision REST. Its /mcp endpoint is NOT
+	# exposed publicly; the brain reaches it on the private docker network.
+	@visionmcp path /vision/mcp /vision/mcp/*
+	handle @visionmcp {
+		respond 404
+	}
+	handle_path /vision/* {
+		reverse_proxy {$NANDI_VISION_UPSTREAM:vision:8765} {
+			flush_interval -1
+		}
+	}
+
+	# The single-page app.
+	handle {
+		root * /srv
+		@html path / /index.html
+		header @html Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}
