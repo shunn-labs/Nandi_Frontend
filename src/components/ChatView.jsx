@@ -46,6 +46,8 @@ const MAX_ANSWER_PANELS = 3
 const DOUBLE_ESC_MS = 600
 
 const VISION_SOURCE = { frame: 'snapshot', stream: 'live stream', camera: 'this device' }
+// Shape of a vision panel until its picture has loaded.
+const DEFAULT_ASPECT = 16 / 9
 
 const isTyping = (el) => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
 
@@ -80,6 +82,8 @@ export default function ChatView({ onLogout }) {
   const [toasts, setToasts] = useState([])
   const [caption, setCaption] = useState(null)
   const [isDragging, setIsDragging] = useState(false)
+  // Each vision panel's picture shape (width / height), once its media loads.
+  const [aspects, setAspects] = useState({})
 
   // ── Voice ──────────────────────────────────────────────
   const [speaking, setSpeaking] = useState(false)
@@ -367,10 +371,15 @@ export default function ChatView({ onLogout }) {
   }, [vision.cameraError, vision.clearCameraError, toast])
 
   // ── What is on the stage ───────────────────────────────
+  const setAspect = useCallback((id, ratio) => {
+    setAspects(prev => (Math.abs((prev[id] || 0) - ratio) < 0.01 ? prev : { ...prev, [id]: ratio }))
+  }, [])
+
   const panels = useMemo(() => {
     const list = vision.boxes.map(b => ({
       id: b.id, at: b.at, title: b.label, source: VISION_SOURCE[b.type],
-      content: <VisionBox box={b} onCapture={handleVisionCapture} />,
+      aspect: aspects[b.id] || DEFAULT_ASPECT,
+      content: <VisionBox box={b} onCapture={handleVisionCapture} onAspect={(r) => setAspect(b.id, r)} />,
     }))
     const answers = messages.filter(m => m.role === 'ai' && m.panel).slice(-MAX_ANSWER_PANELS)
     for (const m of messages) {
@@ -395,7 +404,7 @@ export default function ChatView({ onLogout }) {
       }
     }
     return list.sort((a, b) => a.at - b.at)
-  }, [vision.boxes, messages, hidden, handleVisionCapture, handlePromptAnswer])
+  }, [vision.boxes, aspects, messages, hidden, handleVisionCapture, handlePromptAnswer, setAspect])
 
   // A new panel comes to the front.
   const newestId = panels.length ? panels[panels.length - 1].id : null

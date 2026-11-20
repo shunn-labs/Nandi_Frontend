@@ -15,8 +15,12 @@ import { startConsumer } from '../lib/webrtcConsumer.js'
  *   🔄 Refresh  — re-connect the WebRTC consumer (stream only)
  *   ⤺  Switch  — flip front ↔ back camera (camera only)
  *   (Closing is the panel's job.)
+ *
+ * onAspect(width / height) reports the media's real shape once it is known
+ * (and again if a stream changes resolution), so the panel can take that
+ * shape instead of letterboxing the picture.
  */
-export default function VisionBox({ box, onCapture }) {
+export default function VisionBox({ box, onCapture, onAspect }) {
   const videoRef = useRef(null)
   const consumerRef = useRef(null)
   const [state, setState] = useState(box.type === 'frame' ? 'live' : 'connecting')
@@ -130,6 +134,10 @@ export default function VisionBox({ box, onCapture }) {
     }
   }
 
+  const reportAspect = (w, h) => {
+    if (w > 0 && h > 0) onAspect?.(w / h)
+  }
+
   const facingLabel = box.type === 'camera' && box.producer
     ? (box.producer.getFacingMode() === 'environment' ? 'back' : 'front')
     : null
@@ -141,9 +149,18 @@ export default function VisionBox({ box, onCapture }) {
           className="vbox__media"
           src={`data:${box.mime || 'image/jpeg'};base64,${box.imageB64}`}
           alt={box.label}
+          onLoad={(e) => reportAspect(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
         />
       ) : (
-        <video ref={videoRef} className="vbox__media" autoPlay playsInline muted />
+        <video
+          ref={videoRef}
+          className="vbox__media"
+          autoPlay
+          playsInline
+          muted
+          onLoadedMetadata={(e) => reportAspect(e.currentTarget.videoWidth, e.currentTarget.videoHeight)}
+          onResize={(e) => reportAspect(e.currentTarget.videoWidth, e.currentTarget.videoHeight)}
+        />
       )}
 
       {box.type !== 'frame' && (

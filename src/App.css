@@ -941,10 +941,12 @@ kbd {
   inset: 0;
   pointer-events: none;
   z-index: 5;
-  --focus-w: min(620px, calc(100% - 32px));
+  /* A size container, so panels can size themselves against the stage (cqw/cqh). */
+  container-type: size;
   --side-w: min(300px, calc((100% - 620px) / 2 - 32px));
   --top: 76px;
   --bottom: 92px;
+  --head-h: 42px;
 }
 
 .panel {
@@ -966,7 +968,9 @@ kbd {
 @keyframes panel-in { from { opacity: 0; scale: 0.92; translate: 0 20px; } }
 
 .panel--focus {
-  left: 50%; top: var(--top); width: var(--focus-w);
+  left: 50%; top: var(--top);
+  /* --panel-w is set when the user drags the corner. */
+  width: min(var(--panel-w, 620px), 100cqw - 32px);
   max-height: calc(100% - var(--top) - var(--bottom));
   transform: translateX(-50%);
   border-color: var(--cyan-edge);
@@ -987,6 +991,31 @@ kbd {
   opacity: 0; transform: scale(0.15); transform-origin: left bottom; pointer-events: none;
 }
 .panel--alert { border-color: var(--needs-edge); }
+
+/* A media panel takes its picture's shape: as wide as asked, but never so wide
+   that the picture would be taller than the stage. */
+.panel--media.panel--focus {
+  width: min(var(--panel-w, 760px), 100cqw - 32px,
+             (100cqh - var(--top) - var(--bottom) - var(--head-h)) * var(--aspect));
+}
+.panel--max {
+  top: 12px;
+  width: calc(100cqw - 32px);
+  max-height: calc(100cqh - 12px - var(--bottom));
+}
+.panel--media.panel--max {
+  width: min(100cqw - 32px, (100cqh - 12px - var(--bottom) - var(--head-h)) * var(--aspect));
+}
+
+/* Corner grip on the panel in front. */
+.panel__grip {
+  position: absolute; right: 0; bottom: 0; width: 18px; height: 18px;
+  cursor: nwse-resize; touch-action: none; opacity: 0; transition: opacity 0.2s;
+  background: linear-gradient(135deg, transparent 55%, var(--text-muted) 55%, var(--text-muted) 62%,
+                              transparent 62%, transparent 72%, var(--text-muted) 72%, var(--text-muted) 79%, transparent 79%);
+}
+.panel:hover .panel__grip { opacity: 1; }
+@media (hover: none) { .panel__grip { opacity: 0.6; } }
 
 .panel__head { display: flex; align-items: baseline; gap: 8px; padding: 10px 8px 10px 14px; flex-shrink: 0; }
 .panel__title {
@@ -1243,7 +1272,7 @@ kbd {
 .theme-picker__note { margin-top: 8px; font-size: 0.8rem; color: var(--text-muted); }
 
 /* ── Vision panel content ── */
-.vbox { position: relative; aspect-ratio: 4 / 3; background: #000; }
+.vbox { position: relative; aspect-ratio: var(--aspect, 16 / 9); background: #000; }
 .vbox__media { display: block; width: 100%; height: 100%; object-fit: contain; }
 .vbox__state {
   position: absolute; top: 10px; left: 10px;
