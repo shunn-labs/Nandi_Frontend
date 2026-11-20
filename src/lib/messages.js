@@ -76,7 +76,11 @@ export function needsPanel(text, errors) {
 
 /** The first sentence of a reply, without markdown symbols, for subtitles. */
 export function firstSentence(text, max = 140) {
-  const plain = text.replace(/[*_`#>|]/g, '').replace(/\s+/g, ' ').trim()
+  const plain = text
+    .replace(/^\s*([-*+]|\d+\.)\s+/gm, '')   // list markers
+    .replace(/[*_`#>|]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
   const end = plain.search(/[.!?](\s|$)/)
   const sentence = end > 0 ? plain.slice(0, end + 1) : plain
   return sentence.length > max ? `${sentence.slice(0, max - 1)}…` : sentence
