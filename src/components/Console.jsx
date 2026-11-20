@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react'
 import LogPanel from './LogPanel.jsx'
 import Transcript from './Transcript.jsx'
 import ActivityCard from './ActivityCard.jsx'
+import useCameras from '../hooks/useCameras.js'
 
 const TABS = [
   { key: 'transcript', label: 'Transcript' },
@@ -25,6 +26,7 @@ export default function Console({
   capDevices, vision,
 }) {
   const [latestLog, setLatestLog] = useState('')
+  const cams = useCameras(open && tab === 'devices')
   const [height, setHeight] = useState(220)
   const drag = useRef(null)
 
@@ -95,6 +97,37 @@ export default function Console({
               ))}
             </tbody>
           </table>
+
+          <div className="cams__head">
+            Cameras
+            <button className="logs__clear" onClick={cams.refresh}>Refresh</button>
+          </div>
+          {cams.error && <div className="cams__error">{cams.error}</div>}
+          {!cams.error && cams.cameras.length === 0 && <div className="console__empty">No cameras known yet.</div>}
+          {cams.cameras.length > 0 && (
+            <table className="devices cams">
+              <tbody>
+                {cams.cameras.map(c => {
+                  const showing = vision.boxes.some(b => b.streamId === c.id)
+                  return (
+                    <tr key={c.id}>
+                      <td>{c.name || c.id}</td>
+                      <td><code className="cams__id" title="Stream ID">{c.id}</code></td>
+                      <td className={c.live ? 'devices__on' : 'devices__off'}>
+                        {c.live ? 'live' : c.last_seen_s_ago != null ? `seen ${ago(c.last_seen_s_ago)} ago` : 'offline'}
+                      </td>
+                      <td>
+                        <button className="devices__btn" onClick={() => vision.openStream(c.id, c.name)}
+                          title={c.live ? 'Show this camera' : 'Opens and waits until the camera starts sending'}>
+                          {showing ? 'Show' : 'Open'}
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
           <StreamOpener onOpen={vision.openStream} />
         </div>
       </div>
@@ -102,7 +135,13 @@ export default function Console({
   )
 }
 
-/** Opens any WebRTC stream by its id (e.g. pc_cam) as a panel. */
+function ago(s) {
+  if (s < 90) return `${Math.round(s)} s`
+  if (s < 5400) return `${Math.round(s / 60)} min`
+  return `${Math.round(s / 3600)} h`
+}
+
+/** Opens a stream that is not in the list, by its id (e.g. pc_cam). */
 function StreamOpener({ onOpen }) {
   const [id, setId] = useState('')
   const submit = (e) => {
@@ -113,7 +152,7 @@ function StreamOpener({ onOpen }) {
   }
   return (
     <form className="devices__stream" onSubmit={submit}>
-      <input value={id} onChange={(e) => setId(e.target.value)} placeholder="Stream ID, e.g. pc_cam" aria-label="Stream ID" />
+      <input value={id} onChange={(e) => setId(e.target.value)} placeholder="Other stream ID, e.g. pc_cam" aria-label="Stream ID" />
       <button className="devices__btn" type="submit" disabled={!id.trim()}>Open stream</button>
     </form>
   )

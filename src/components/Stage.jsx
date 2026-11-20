@@ -99,7 +99,7 @@ export default function Stage({ panels, focusId, minimized, onFocus, onClose, on
             >
               <header className="panel__head" onDoubleClick={() => role === 'focus' && toggleMax(p.id)}>
                 <h2 className="panel__title">{p.title}</h2>
-                {p.source && <span className="panel__source">{p.source}</span>}
+                {p.source && <span className="panel__source" title={p.source}>{p.source}</span>}
                 <div className="panel__btns">
                   {role === 'focus' && (
                     <button className="panel__btn" onClick={() => toggleMax(p.id)}

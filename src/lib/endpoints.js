@@ -59,6 +59,11 @@ export function getVisionSignalUrl() {
   )
 }
 
+/** http(s) base of the vision server's REST API, from the signaling URL. */
+export function getVisionApiBase() {
+  return getVisionSignalUrl().replace(/^ws/, 'http').replace(/\/ws\/signal\/?$/, '')
+}
+
 // Make the target obvious in the console — the whole class of bug above comes
 // from not knowing which backend you are actually talking to.
 console.info(

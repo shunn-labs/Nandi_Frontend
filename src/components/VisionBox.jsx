@@ -169,6 +169,11 @@ export default function VisionBox({ box, onCapture, onAspect }) {
         </span>
       )}
 
+      {/* Where the picture comes from, on the picture itself (like a CCTV overlay). */}
+      {(box.streamId || box.camera) && (
+        <span className="vbox__id" title="Stream ID">{box.streamId || box.camera}</span>
+      )}
+
       <div className="vbox__tools">
         {box.type === 'camera' && (
           <button className="vbox__tool" title="Switch front / back camera" onClick={handleSwitchCamera}>Switch</button>

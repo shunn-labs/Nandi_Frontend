@@ -45,7 +45,12 @@ const MAX_ANSWER_PANELS = 3
 // Two presses of Esc within this window clear the whole screen.
 const DOUBLE_ESC_MS = 600
 
-const VISION_SOURCE = { frame: 'snapshot', stream: 'live stream', camera: 'this device' }
+// What a vision panel shows under its title: what it is and where it comes
+// from (the stream id, or the camera a snapshot was taken from).
+function visionSource(b) {
+  if (b.type === 'frame') return b.camera ? `snapshot · ${b.camera}` : 'snapshot'
+  return `${b.type === 'camera' ? 'this device' : 'live'} · ${b.streamId}`
+}
 // Shape of a vision panel until its picture has loaded.
 const DEFAULT_ASPECT = 16 / 9
 
@@ -377,7 +382,7 @@ export default function ChatView({ onLogout }) {
 
   const panels = useMemo(() => {
     const list = vision.boxes.map(b => ({
-      id: b.id, at: b.at, title: b.label, source: VISION_SOURCE[b.type],
+      id: b.id, at: b.at, title: b.label, source: visionSource(b),
       aspect: aspects[b.id] || DEFAULT_ASPECT,
       content: <VisionBox box={b} onCapture={handleVisionCapture} onAspect={(r) => setAspect(b.id, r)} />,
     }))
@@ -447,6 +452,13 @@ export default function ChatView({ onLogout }) {
   }, [vision, panels])
 
   const focused = panels.some(p => p.id === focusId) && !minimized.has(focusId)
+
+  // Opening a stream that is already on screen brings its panel to the front.
+  const openStream = useCallback((streamId, label) => {
+    const existing = vision.boxes.find(b => b.streamId === streamId)
+    if (existing) focusPanel(existing.id)
+    else vision.openStream(streamId, label)
+  }, [vision, focusPanel])
 
   // ── What Nandi is doing ────────────────────────────────
   const pending = useMemo(() => [...messages].reverse().find(m => m.thinking), [messages])
@@ -605,7 +617,7 @@ export default function ChatView({ onLogout }) {
           tab={consoleTab} onTab={setConsoleTab}
           messages={messages} activities={activities} onStopActivity={handleStopTask}
           showLogs={showLogs} connected={connected} capDevices={capDevices}
-          vision={vision}
+          vision={{ ...vision, openStream }}
         />
       </footer>
 

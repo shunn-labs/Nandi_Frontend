@@ -32,9 +32,9 @@ function capFrames(boxes) {
  * socket), streams opened by id, and this device's own camera.
  *
  * A box: { id, type: 'frame' | 'stream' | 'camera', label, at, ...media }
- *   frame   imageB64, mime    (a show_frame for a wid on screen updates it)
- *   stream  streamId          (deduped by id)
- *   camera  producer
+ *   frame   imageB64, mime, camera   (a show_frame for a wid on screen updates it)
+ *   stream  streamId                 (deduped by id)
+ *   camera  streamId, producer
  */
 export default function useVisionBoxes() {
   const [boxes, setBoxes] = useState([])
@@ -54,10 +54,11 @@ export default function useVisionBoxes() {
     }, 1000)
 
     onVisionCommand((msg) => {
-      const { action, wid, label, stream_id, image_b64, mime } = msg
+      const { action, wid, label, stream_id, image_b64, mime, camera } = msg
 
       if (action === 'show_frame') {
-        const image = { imageB64: image_b64, mime: mime || 'image/jpeg' }
+        // `camera`: which camera the frame was taken from, when the brain says.
+        const image = { imageB64: image_b64, mime: mime || 'image/jpeg', camera: camera || '' }
         setBoxes(prev => {
           // The server re-sends a wid to refresh that box, so update it in place.
           const existing = wid ? prev.find(b => b.id === wid) : null
@@ -105,10 +106,10 @@ export default function useVisionBoxes() {
     setBoxes([])
   }, [])
 
-  const openStream = useCallback((streamId) => {
+  const openStream = useCallback((streamId, label) => {
     const id = `stream_${streamId}`
     setBoxes(prev => (prev.some(b => b.id === id) ? prev
-      : [...prev, { id, type: 'stream', label: streamId, streamId, at: Date.now() }]))
+      : [...prev, { id, type: 'stream', label: label || streamId, streamId, at: Date.now() }]))
   }, [])
 
   const startCamera = useCallback(async () => {
@@ -124,7 +125,7 @@ export default function useVisionBoxes() {
       producerRef.current = producer
       const id = `camera_${streamId}`
       setBoxes(prev => (prev.some(b => b.id === id) ? prev
-        : [...prev, { id, type: 'camera', label: 'My camera', producer, at: Date.now() }]))
+        : [...prev, { id, type: 'camera', label: 'My camera', streamId, producer, at: Date.now() }]))
       setCameraOn(true)
     } catch (err) {
       console.error('[vision] camera producer failed:', err)
