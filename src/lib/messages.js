@@ -51,6 +51,31 @@ export function eventMessage(f) {
            device: asText(e.device), title, text: text ? `${title} — ${text}` : title, ts: Date.now() }
 }
 
+/** A job's goal without the "On the phone:" prefix the brain adds to its title. */
+export function activityTitle(a) {
+  return (a.title || 'Job').replace(/^On the (phone|tablet|pc):\s*/i, '')
+}
+
+const OUTCOME = { ok: '✓', error: '✗', stopped: 'Stopped' }
+
+/**
+ * One short line for a job in the transcript: its goal and how it ended. The
+ * brain's summary also carries step counts, cost and the action list
+ * ("SUCCESS: … (4 steps, 15s, …) Actions: … Spent …"); those stay in the
+ * Activity tab, where the full card is.
+ */
+export function activityLine(a) {
+  const goal = activityTitle(a).replace(/\.$/, '')
+  if (a.state !== 'done') return `${goal} · running`
+  const result = (a.summary || '')
+    .replace(/^(SUCCESS|FAILED|STOPPED|ERROR)\s*:\s*/i, '')
+    .split(/\s\(\d+ steps?\b|\sActions:|\sSpent \$/)[0]
+    .trim()
+  const mark = OUTCOME[a.status] || ''
+  if (!result || /^stopped\.?$/i.test(result)) return `${goal} · ${mark || a.status || 'finished'}`
+  return `${goal} · ${mark === 'Stopped' ? 'Stopped: ' : mark ? `${mark} ` : ''}${result}`
+}
+
 /** A prompt still waiting for the user (or for the device to take the answer). */
 export const isOpenPrompt = (m) => m.role === 'prompt' && ['open', 'sent', 'invalid'].includes(m.status)
 

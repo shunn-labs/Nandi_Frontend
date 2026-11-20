@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react'
 import Markdown from './Markdown.jsx'
 import ProblemList from './ProblemList.jsx'
-import { cardLabel } from '../lib/messages.js'
+import { cardLabel, activityLine } from '../lib/messages.js'
 
 // Closer to the bottom than this counts as "following the conversation".
 const FOLLOW_THRESHOLD_PX = 80
@@ -39,7 +39,7 @@ function Line({ m }) {
     )
   }
   const what = m.role === 'prompt' ? `${m.title || m.message} · ${PROMPT_STATUS[m.status] || m.status}`
-    : m.role === 'activity' ? `${m.title || 'Job'} · ${m.state === 'done' ? (m.summary || m.status || 'finished') : 'running'}`
+    : m.role === 'activity' ? activityLine(m)
     : m.text
   return (
     <>

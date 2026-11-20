@@ -1,4 +1,5 @@
 import React from 'react'
+import { activityTitle } from '../lib/messages.js'
 
 /**
  * A slim pill under the core while something is in progress: a running job
@@ -18,7 +19,7 @@ export default function JobStrip({ job, pending, onStop }) {
       <div className="job-strip" role="status">
         <span className="job-strip__spin" />
         <span className="job-strip__text">
-          <b>{job.title || 'Working'}</b>
+          <b>{activityTitle(job)}</b>
           {last?.text && <span> · {last.text}</span>}
         </span>
         {job.can_stop && (
