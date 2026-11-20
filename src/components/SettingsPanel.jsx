@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { API_BASE } from '../lib/endpoints.js'
+import { THEMES } from '../lib/themes.js'
 
 function getDeviceId() {
   const match = document.cookie.match(/(?:^|;\s*)nandi_device_id=([^;]+)/)
@@ -46,6 +47,9 @@ function Toggle({ value, onChange }) {
  *
  * One owner per setting removes both.
  *
+ * `theme` is owned by ChatView too: the menu, the command palette and the T key
+ * change it as well.
+ *
  * `autoSend` stays local: ChatInput reads the key at the moment it needs it, so
  * there is no second copy to fall out of step.
  */
@@ -56,6 +60,8 @@ export default function SettingsPanel({
   onTtsChange,
   showLogs,
   onShowLogsChange,
+  theme,
+  onThemeChange,
 }) {
   const [autoSend, setAutoSend] = useState(() => {
     return localStorage.getItem('nandi_auto_send_stt') !== 'false'
@@ -95,6 +101,26 @@ export default function SettingsPanel({
               <span className="settings-row__label">Auto-send after speech</span>
               <Toggle value={autoSend} onChange={setAutoSend} />
             </div>
+          </div>
+
+          {/* Theme */}
+          <div>
+            <div className="settings-section__label">Theme</div>
+            <div className="theme-picker" role="radiogroup" aria-label="Theme">
+              {Object.entries(THEMES).map(([key, t]) => (
+                <button
+                  key={key}
+                  role="radio"
+                  aria-checked={theme === key}
+                  className={`theme-picker__option${theme === key ? ' theme-picker__option--on' : ''}`}
+                  onClick={() => onThemeChange(key)}
+                >
+                  <i style={{ background: t.swatch }} />
+                  {t.name}
+                </button>
+              ))}
+            </div>
+            <p className="theme-picker__note">{THEMES[theme]?.note} Press T to cycle.</p>
           </div>
 
           {/* Interface */}

@@ -2,7 +2,8 @@ import React, { useEffect, useRef, useState } from 'react'
 import { startConsumer } from '../lib/webrtcConsumer.js'
 
 /**
- * VisionBox — a single tile in the right column.
+ * VisionBox — the picture inside a vision panel on the stage. The panel around
+ * it carries the title and Close; this draws the media and its own tools.
  *
  * box.type === 'stream'  → WebRTC consumer with auto-reconnect + manual refresh
  * box.type === 'frame'   → static base64 image (box.mime, JPEG if unset)
@@ -13,9 +14,9 @@ import { startConsumer } from '../lib/webrtcConsumer.js'
  *                 attachment strip (same flow as uploading a file)
  *   🔄 Refresh  — re-connect the WebRTC consumer (stream only)
  *   ⤺  Switch  — flip front ↔ back camera (camera only)
- *   ✕  Close   — close the box
+ *   (Closing is the panel's job.)
  */
-export default function VisionBox({ box, onClose, onCapture }) {
+export default function VisionBox({ box, onCapture }) {
   const videoRef = useRef(null)
   const consumerRef = useRef(null)
   const [state, setState] = useState(box.type === 'frame' ? 'live' : 'connecting')
@@ -135,75 +136,40 @@ export default function VisionBox({ box, onClose, onCapture }) {
 
   return (
     <div className="vbox">
-      <div className="vbox__header">
-        <span className="vbox__title">
-          <span className={`vbox__dot vbox__dot--${state}`} />
-          {box.label || box.streamId || 'Vision'}
-          {facingLabel && (
-            <span className="vbox__facing">[{facingLabel}]</span>
-          )}
+      {box.type === 'frame' ? (
+        <img
+          className="vbox__media"
+          src={`data:${box.mime || 'image/jpeg'};base64,${box.imageB64}`}
+          alt={box.label}
+        />
+      ) : (
+        <video ref={videoRef} className="vbox__media" autoPlay playsInline muted />
+      )}
+
+      {box.type !== 'frame' && (
+        <span className={`vbox__state vbox__state--${state}`}>
+          {state === 'live' ? (box.type === 'camera' ? `LIVE · ${facingLabel}` : 'LIVE') : state}
         </span>
-        <div className="vbox__btns">
-          {box.type === 'camera' && (
-            <button
-              className="vbox__btn"
-              title="Switch front / back camera"
-              onClick={handleSwitchCamera}
-            >
-              ⤺
-            </button>
-          )}
-          {box.type === 'stream' && (
-            <button
-              className="vbox__btn"
-              title="Refresh / reconnect"
-              onClick={handleRefresh}
-            >
-              🔄
-            </button>
-          )}
-          <button
-            className="vbox__btn"
-            title="Capture frame → attach to chat"
-            onClick={handleCapture}
-          >
-            📸
-          </button>
-          <button
-            className="vbox__btn vbox__btn--close"
-            title="Close"
-            onClick={() => onClose?.(box.id)}
-          >
-            ✕
-          </button>
-        </div>
+      )}
+
+      <div className="vbox__tools">
+        {box.type === 'camera' && (
+          <button className="vbox__tool" title="Switch front / back camera" onClick={handleSwitchCamera}>Switch</button>
+        )}
+        {box.type === 'stream' && (
+          <button className="vbox__tool" title="Reconnect" onClick={handleRefresh}>Reconnect</button>
+        )}
+        <button className="vbox__tool" title="Attach this frame to your next message" onClick={handleCapture}>Attach</button>
       </div>
 
-      <div className="vbox__body">
-        {box.type === 'frame' ? (
-          <img
-            className="vbox__media"
-            src={`data:${box.mime || 'image/jpeg'};base64,${box.imageB64}`}
-            alt={box.label}
-          />
-        ) : (
-          <video
-            ref={videoRef}
-            className="vbox__media"
-            autoPlay
-            playsInline
-            muted
-          />
-        )}
-        {state !== 'live' && box.type === 'stream' && (
-          <div className="vbox__placeholder">
-            {state === 'connecting' && 'Connecting…'}
-            {state === 'waiting' && 'No producer on this stream yet · waiting…'}
-            {state === 'offline' && 'Producer offline · auto-retrying…'}
-            {state === 'failed' && 'Connection failed · retrying…'}
-          </div>
-        )}
-      </div>
+      {state !== 'live' && box.type === 'stream' && (
+        <div className="vbox__placeholder">
+          {state === 'connecting' && 'Connecting…'}
+          {state === 'waiting' && 'No producer on this stream yet · waiting…'}
+          {state === 'offline' && 'Producer offline · auto-retrying…'}
+          {state === 'failed' && 'Connection failed · retrying…'}
+        </div>
+      )}
     </div>
   )
 }

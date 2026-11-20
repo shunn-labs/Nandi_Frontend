@@ -1,15 +1,23 @@
 import React, { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle } from 'react'
 import Attachment from './Attachment.jsx'
-import { IconPaperclip, IconCamera, IconMic, IconSpeaker, IconSend } from './Icons.jsx'
+import { IconPaperclip, IconMic, IconSend } from './Icons.jsx'
 import { startRecording, stopRecording, isRecording } from '../lib/audioRecorder.js'
 import { stop as stopTts, getIsPlaying } from '../lib/ttsPlayer.js'
 
+/**
+ * The command bar: attachments, the text box and one round button that is the
+ * mic while the box is empty and Send once there is something to send.
+ *
+ * Typing or starting the mic while Nandi is speaking cuts the voice off.
+ *
+ * onMicVolume(level)        mic level while recording, for the core
+ * onRecordingChange(bool)   so the core can show it is listening
+ * ref: focus(), toggleMic()
+ */
 const ChatInput = forwardRef(function ChatInput({
   onSend,
-  onCameraOpen,
   onMicVolume,
-  ttsActive,
-  onTtsToggle,
+  onRecordingChange,
 }, ref) {
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState([])
@@ -21,10 +29,7 @@ const ChatInput = forwardRef(function ChatInput({
   const attachRef = useRef(null)
   const textareaRef = useRef(null)
 
-  // Expose focus method for Ctrl+K
-  useImperativeHandle(ref, () => ({
-    focus: () => textareaRef.current?.focus(),
-  }))
+  useEffect(() => { onRecordingChange?.(recording) }, [recording, onRecordingChange])
 
   // Auto-resize textarea
   useEffect(() => {
@@ -68,6 +73,7 @@ const ChatInput = forwardRef(function ChatInput({
       return
     }
 
+    if (getIsPlaying()) stopTts()
     setMicError('')
     setRecording(true)
     try {
@@ -106,15 +112,23 @@ const ChatInput = forwardRef(function ChatInput({
     }
   }
 
-  // ── Speaker (TTS toggle) ─────────────────────────────────
-  const handleSpeakerClick = () => {
-    if (getIsPlaying()) {
-      stopTts()
-    }
-    onTtsToggle()
+  // Read by the parent (core click, hold Space) through the ref. A ref keeps
+  // the latest handleMicClick, which closes over the current attachments.
+  const micRef = useRef(handleMicClick)
+  micRef.current = handleMicClick
+  useImperativeHandle(ref, () => ({
+    focus: () => textareaRef.current?.focus(),
+    toggleMic: () => micRef.current(),
+  }), [])
+
+  const handleChange = (e) => {
+    // Typing while Nandi talks means you want to cut in.
+    if (getIsPlaying()) stopTts()
+    setText(e.target.value)
   }
 
-  const canSend = (text.trim().length > 0 || attachments.length > 0) && !uploading
+  const hasContent = text.trim().length > 0 || attachments.length > 0
+  const showSend = hasContent && !recording
 
   return (
     <>
@@ -131,63 +145,47 @@ const ChatInput = forwardRef(function ChatInput({
         </div>
       )}
 
-      <div className="chat-input-bar">
-        {/* Attach */}
+      <div className={`chat-input-bar${recording ? ' chat-input-bar--listening' : ''}`}>
         <button
           className="chat-input-bar__attach-btn"
           title="Attach files"
+          aria-label="Attach files"
           onClick={() => attachRef.current?.triggerSelect()}
         >
           <IconPaperclip />
         </button>
 
-        {/* Text area */}
         <textarea
           ref={textareaRef}
           className="chat-input-bar__textarea"
-          placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+          placeholder={recording ? 'Listening…' : 'Ask Nandi'}
+          aria-label="Message Nandi"
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={handleChange}
           onKeyDown={handleKeyDown}
           rows={1}
         />
 
-        {/* Camera */}
-        <button
-          className="chat-input-bar__action-btn"
-          title="Open camera"
-          onClick={onCameraOpen}
-        >
-          <IconCamera />
-        </button>
-
-        {/* Mic */}
-        <button
-          className={`chat-input-bar__action-btn${recording ? ' chat-input-bar__action-btn--recording' : ''}`}
-          title={recording ? 'Stop recording' : 'Voice input'}
-          onClick={handleMicClick}
-        >
-          <IconMic />
-        </button>
-
-        {/* Speaker */}
-        <button
-          className={`chat-input-bar__action-btn${ttsActive ? ' chat-input-bar__action-btn--active' : ''}`}
-          title={ttsActive ? 'TTS enabled — click to disable' : 'Enable TTS'}
-          onClick={handleSpeakerClick}
-        >
-          <IconSpeaker />
-        </button>
-
-        {/* Send */}
-        <button
-          className="chat-input-bar__action-btn chat-input-bar__action-btn--send"
-          title="Send"
-          onClick={handleSend}
-          disabled={!canSend}
-        >
-          <IconSend />
-        </button>
+        {showSend ? (
+          <button
+            className="chat-input-bar__main-btn chat-input-bar__main-btn--send"
+            title="Send"
+            aria-label="Send"
+            onClick={handleSend}
+            disabled={uploading}
+          >
+            <IconSend />
+          </button>
+        ) : (
+          <button
+            className={`chat-input-bar__main-btn${recording ? ' chat-input-bar__main-btn--recording' : ''}`}
+            title={recording ? 'Stop and send' : 'Talk (or hold Space)'}
+            aria-label={recording ? 'Stop recording' : 'Talk'}
+            onClick={handleMicClick}
+          >
+            <IconMic />
+          </button>
+        )}
       </div>
     </>
   )

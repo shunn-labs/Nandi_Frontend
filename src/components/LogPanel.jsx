@@ -29,10 +29,19 @@ function classifyLog(msg) {
   return 'info'
 }
 
-export default function LogPanel() {
+/**
+ * The brain's live log, shown in the console's Logs tab.
+ *
+ * onLatest(msg)  called with each new line, for the folded console's status line
+ */
+export default function LogPanel({ onLatest }) {
   const [logs, setLogs] = useState([])
   const [connected, setConnected] = useState(false)
-  const endRef = useRef(null)
+  const bodyRef = useRef(null)
+  const followRef = useRef(true)
+  // Read through a ref: the socket handler below is set up once.
+  const onLatestRef = useRef(onLatest)
+  useEffect(() => { onLatestRef.current = onLatest }, [onLatest])
   const wsRef = useRef(null)
 
   useEffect(() => {
@@ -94,6 +103,7 @@ export default function LogPanel() {
 
         const msg = data.log || data.message || JSON.stringify(data)
         const ts = new Date().toLocaleTimeString('en-GB', { hour12: false })
+        onLatestRef.current?.(msg)
 
         setLogs(prev => [...prev.slice(-200), {   // keep last 200
           id: Date.now() + Math.random(),
@@ -138,36 +148,34 @@ export default function LogPanel() {
     }
   }, [])
 
-  // Auto-scroll (desktop only)
+  // Follow new lines unless the user has scrolled up to read.
   useEffect(() => {
-    if (window.innerWidth > 900) {
-      endRef.current?.scrollIntoView({ behavior: 'smooth' })
-    }
+    const el = bodyRef.current
+    if (el && followRef.current) el.scrollTop = el.scrollHeight
   }, [logs])
 
-  return (
-    <>
-      <div className="log-sidebar__header">
-        <span className="log-sidebar__title">
-          <span className={`log-sidebar__indicator${connected ? '' : ' log-sidebar__indicator--off'}`} />
-          Activity
-        </span>
-        <button className="log-sidebar__clear" onClick={() => setLogs([])}>Clear</button>
-      </div>
+  const onScroll = () => {
+    const el = bodyRef.current
+    followRef.current = el.scrollHeight - el.clientHeight - el.scrollTop < 80
+  }
 
-      <div className="log-sidebar__body">
-        {logs.length === 0 ? (
-          <div className="log-sidebar__empty">Waiting for activity…</div>
-        ) : (
-          logs.map(log => (
-            <div key={log.id} className={`log-entry log-entry--${log.type}`}>
-              <span className="log-entry__ts">{log.ts}</span>
-              <span className="log-entry__msg">{log.msg}</span>
-            </div>
-          ))
-        )}
-        <div ref={endRef} />
+  return (
+    <div className="console__pane" ref={bodyRef} onScroll={onScroll}>
+      <div className="logs__head">
+        <span className={`logs__dot${connected ? '' : ' logs__dot--off'}`} />
+        {connected ? 'Streaming brain logs' : 'Log stream not connected'}
+        <button className="logs__clear" onClick={() => setLogs([])}>Clear</button>
       </div>
-    </>
+      {logs.length === 0 ? (
+        <div className="console__empty">Waiting for activity…</div>
+      ) : (
+        logs.map(log => (
+          <div key={log.id} className={`log-entry log-entry--${log.type}`}>
+            <span className="log-entry__ts">{log.ts}</span>
+            <span className="log-entry__msg">{log.msg}</span>
+          </div>
+        ))
+      )}
+    </div>
   )
 }
