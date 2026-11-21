@@ -21,7 +21,8 @@
 //  Nandi's custom RTVI server messages (voice/brain_bridge.py on the server):
 //    {type:"nandi.state", state:"thinking", request_id}   a turn went to the brain
 //    {type:"nandi.progress", text, request_id}            "Checking the gate camera…"
-//    {type:"nandi.engines", stt, tts}                     "local" | "elevenlabs"
+//    {type:"nandi.engines", stt, tts, voice}              "local" | "elevenlabs"; voice = "Aiden" | "ElevenLabs"
+//    {type:"nandi.notice", text}                          a reply couldn't be spoken, and why
 //    {type:"nandi.turn", request_id, status}              the brain finished the turn
 //  Typed text during a session goes up as the client message "nandi.text".
 // ═══════════════════════════════════════════════════════════
@@ -390,7 +391,10 @@ export class VoiceSession {
         if (isCurrent && !t.brainDone) this.h.onProgress?.(String(m.text || ''))
         break
       case 'nandi.engines':
-        this.h.onEngines?.({ stt: String(m.stt || ''), tts: String(m.tts || '') })
+        this.h.onEngines?.({ stt: String(m.stt || ''), tts: String(m.tts || ''), voice: String(m.voice || '') })
+        break
+      case 'nandi.notice':
+        if (m.text) this.h.onNotice?.(String(m.text))
         break
       case 'nandi.turn':
         if (isCurrent && !t.brainDone) this._brainDone(m)

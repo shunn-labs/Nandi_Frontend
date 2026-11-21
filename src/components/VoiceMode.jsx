@@ -20,18 +20,23 @@ const MIC_GAIN = 3
 const BOT_GAIN = 4
 const MAX_AMPLITUDE = 1
 
-const ENGINE_NAME = { local: 'local', elevenlabs: 'cloud' }
 const ENGINE_DETAIL = { local: 'Nandi’s own GPU', elevenlabs: 'ElevenLabs (cloud)' }
+const NOTICE_MS = 8000
 
-/** "local", "cloud" or "local / cloud" (speech recognition / voice), with a tooltip. */
+/** Who is speaking right now: "GPU · Aiden" or "ElevenLabs", with the details in a tooltip. */
 function engineBadge(engines) {
   if (!engines || (!engines.stt && !engines.tts)) return null
-  const stt = ENGINE_NAME[engines.stt] || engines.stt || '?'
-  const tts = ENGINE_NAME[engines.tts] || engines.tts || '?'
+  const voice = engines.tts === 'elevenlabs' ? 'ElevenLabs'
+    : engines.tts === 'local' ? `GPU · ${engines.voice || 'local'}`
+    : engines.tts || '?'
+  const cloudStt = engines.stt === 'elevenlabs' && engines.tts !== 'elevenlabs'
+  const sttDetail = ENGINE_DETAIL[engines.stt] || engines.stt || '?'
+  const ttsDetail = ENGINE_DETAIL[engines.tts] || engines.tts || '?'
   return {
-    text: stt === tts ? stt : `${stt} / ${tts}`,
+    text: cloudStt ? `${voice} · cloud STT` : voice,
     cloud: engines.stt === 'elevenlabs' || engines.tts === 'elevenlabs',
-    title: `Speech recognition: ${ENGINE_DETAIL[engines.stt] || stt} · Voice: ${ENGINE_DETAIL[engines.tts] || tts}`,
+    title: `Speech recognition: ${sttDetail} · Voice: ${ttsDetail}`
+      + (engines.voice && engines.tts === 'local' ? ` (speaker ${engines.voice})` : ''),
   }
 }
 
@@ -66,6 +71,7 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
   const [botText, setBotText] = useState('')
   const [progress, setProgress] = useState('')
   const [engines, setEngines] = useState(null)
+  const [notice, setNotice] = useState('')
   const [muted, setMuted] = useState(false)
   const [audioBlocked, setAudioBlocked] = useState(false)
   const [draft, setDraft] = useState('')
@@ -78,6 +84,11 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
 
   useEffect(() => { handlersRef.current.onState?.(state) }, [state])
   useEffect(() => { handlersRef.current.onCaption?.({ user: userText, bot: botText }) }, [userText, botText])
+  useEffect(() => {
+    if (!notice) return undefined
+    const timer = setTimeout(() => setNotice(''), NOTICE_MS)
+    return () => clearTimeout(timer)
+  }, [notice])
 
   const handleLevels = useCallback(({ mic, bot }) => {
     const amplitude = Math.min(MAX_AMPLITUDE, Math.max(mic * MIC_GAIN, bot * BOT_GAIN))
@@ -92,6 +103,7 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
     setBotText('')
     setProgress('')
     setEngines(null)
+    setNotice('')
     setMuted(false)
     setAudioBlocked(false)
 
@@ -101,6 +113,7 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
       onBotText: setBotText,
       onProgress: setProgress,
       onEngines: setEngines,
+      onNotice: setNotice,
       onLevels: handleLevels,
       onTurn: (turn) => handlersRef.current.onTurn?.(turn),
       onError: (err) => setError(err?.message || 'Voice mode stopped.'),
@@ -184,6 +197,9 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
             )}
             {state === 'thinking' && progress && (
               <p className="voice-mode__progress">{progress}</p>
+            )}
+            {notice && (
+              <p className="voice-mode__notice" role="status">{notice}</p>
             )}
             {(onCaption || (!userText && !botText)) && !(state === 'thinking' && progress) && hint && (
               <p className="voice-mode__hint">{hint}</p>

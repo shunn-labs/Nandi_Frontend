@@ -1502,6 +1502,7 @@ kbd {
 }
 .voice-mode__line--bot .voice-mode__who { color: var(--cyan); }
 .voice-mode__progress { font-size: 12.5px; color: var(--cyan); font-style: italic; }
+.voice-mode__notice { font-size: 12.5px; color: var(--needs); }
 .voice-mode__hint { font-size: 12.5px; color: var(--text-muted); }
 .voice-mode__error { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--error); font-size: 13px; line-height: 1.4; }
 .voice-mode__retry,
