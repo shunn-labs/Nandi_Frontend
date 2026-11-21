@@ -1,8 +1,10 @@
 // ═══════════════════════════════════════════════════════════
-//  audioRecorder.js  –  Record + energy-based VAD + STT via backend proxy
+//  audioRecorder.js  –  Record + energy-based VAD + STT on the audio server
 // ═══════════════════════════════════════════════════════════
 
-import { getBaseUrl } from './wsAdapter.js'
+import { AUDIO_BASE } from './endpoints.js'
+import { audioNetworkError, audioResponseError, authHeaders } from './audioApi.js'
+import { getVoiceLang } from './voicePrefs.js'
 
 const SILENCE_THRESHOLD = 0.015    // RMS below this = silence
 const SILENCE_DURATION  = 1600     // ms of silence before auto-stop
@@ -18,8 +20,14 @@ let recordStart    = 0
 let volumeCallback = null          // for orb animation
 let rafId          = null
 
-function getToken() {
-  return localStorage.getItem('user_token')
+// The audio server decodes any container itself, so take the first one this
+// browser can record. Safari has no webm recorder at all — with webm as the
+// only choice, dictation threw there before a word was said.
+const RECORDING_TYPES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4']
+
+function pickMimeType() {
+  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return ''
+  return RECORDING_TYPES.find(t => MediaRecorder.isTypeSupported(t)) || ''
 }
 
 // ── Volume monitoring (feeds orb) ────────────────────────
@@ -79,11 +87,9 @@ export function startRecording(onVolume) {
       source.connect(analyser)
 
       // MediaRecorder for actual capture
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : 'audio/webm'
+      const mimeType = pickMimeType()
 
-      mediaRecorder = new MediaRecorder(mediaStream, { mimeType })
+      mediaRecorder = new MediaRecorder(mediaStream, mimeType ? { mimeType } : undefined)
       chunks = []
 
       mediaRecorder.ondataavailable = (e) => {
@@ -158,25 +164,52 @@ function cleanup() {
   }
 }
 
-// ── Transcribe via backend proxy ─────────────────────────
-// Your FastAPI backend needs a POST /api/stt endpoint
-// that forwards the audio to OpenAI Whisper and returns { text }
+// ── Transcribe on the Nandi Audio Server ─────────────────
+// POST {AUDIO_BASE}/v1/stt, multipart field `file` (any format: the server
+// decodes webm/opus, ogg, mp4… itself) plus the voice language from Settings
+// → { text, language, engine, duration }. The brain's old /api/stt is gone.
+//
+// Failures throw an Error whose `userMessage` is a sentence ChatInput can show
+// as is — "the session expired" and "the speech service is down" need
+// different things from the user, and a bare "STT failed: 401" said neither.
 
-async function transcribe(blob) {
-  const token = getToken()
-  const baseUrl = getBaseUrl()
+const STT_MESSAGES = {
+  401: 'Your session has expired — sign in again to use the microphone.',
+  413: 'That recording is too long to transcribe.',
+  400: 'The recording could not be decoded. Try again.',
+  503: 'Speech recognition is unavailable right now. Try again in a moment.',
+}
+
+function recordingName(type) {
+  if (/ogg/.test(type)) return 'recording.ogg'
+  if (/mp4|aac|m4a/.test(type)) return 'recording.m4a'
+  return 'recording.webm'
+}
+
+export async function transcribe(blob) {
+  if (!localStorage.getItem('user_token')) {
+    throw Object.assign(new Error('Not signed in'), { userMessage: 'Sign in to use the microphone.' })
+  }
 
   const form = new FormData()
-  form.append('audio', blob, 'recording.webm')
+  form.append('file', blob, recordingName(blob.type))
+  form.append('language', getVoiceLang())
 
-  const res = await fetch(`${baseUrl}/api/stt`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-    body: form,
-  })
+  let res
+  try {
+    res = await fetch(`${AUDIO_BASE}/v1/stt`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: form,
+    })
+  } catch (err) {
+    throw audioNetworkError(err, 'the speech server')
+  }
 
-  if (!res.ok) throw new Error(`STT failed: ${res.status}`)
+  if (!res.ok) {
+    throw await audioResponseError(res, STT_MESSAGES, `Speech-to-text failed (HTTP ${res.status}).`)
+  }
 
   const data = await res.json()
-  return data.text || ''
+  return typeof data.text === 'string' ? data.text.trim() : ''
 }

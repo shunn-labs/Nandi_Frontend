@@ -1,12 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { startConsumer } from '../lib/webrtcConsumer.js'
+import AudioBox from './AudioBox.jsx'
 
 /**
  * VisionBox — a single tile in the right column.
  *
- * box.type === 'stream'  → WebRTC consumer with auto-reconnect + manual refresh
- * box.type === 'frame'   → static base64 image (box.mime, JPEG if unset)
- * box.type === 'camera'  → local producer preview (uses producer ref for switching)
+ * box.type === 'stream'        → WebRTC consumer with auto-reconnect + manual refresh
+ * box.type === 'frame'         → static base64 image (box.mime, JPEG if unset)
+ * box.type === 'camera'        → local producer preview (uses producer ref for switching)
+ * box.type === 'audio'         → a clip from the audio server (see AudioBox)
+ * box.type === 'audio_stream'  → a live mic from the audio server (see AudioBox)
  *
  * Buttons:
  *   📸 Capture  — grab current frame as a File and inject into the chat
@@ -15,7 +18,15 @@ import { startConsumer } from '../lib/webrtcConsumer.js'
  *   ⤺  Switch  — flip front ↔ back camera (camera only)
  *   ✕  Close   — close the box
  */
-export default function VisionBox({ box, onClose, onCapture }) {
+export default function VisionBox(props) {
+  // Audio tiles have nothing to capture and no video, so they are their own
+  // component rather than more branches in MediaBox (and its hooks).
+  return props.box.type === 'audio' || props.box.type === 'audio_stream'
+    ? <AudioBox box={props.box} onClose={props.onClose} />
+    : <MediaBox {...props} />
+}
+
+function MediaBox({ box, onClose, onCapture }) {
   const videoRef = useRef(null)
   const consumerRef = useRef(null)
   const [state, setState] = useState(box.type === 'frame' ? 'live' : 'connecting')

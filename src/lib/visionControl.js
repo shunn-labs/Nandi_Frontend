@@ -191,9 +191,11 @@ function connect() {
       return
     }
 
-    // Forward vision commands to handler
+    // Forward display commands to handler
     //   { action: 'show_frame',  image_b64, mime, label, wid, request_id, camera }
     //   { action: 'show_stream', stream_id, label, wid, request_id }
+    //   { action: 'play_audio',  url, mime, label, wid, duration_s, autoplay, request_id }
+    //   { action: 'show_audio_stream', stream_id, label, wid, request_id }
     //   { action: 'close',       wid }
     //   { action: 'close_all' }
     if (msg.action && commandHandler) {

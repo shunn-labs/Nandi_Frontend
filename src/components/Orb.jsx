@@ -120,7 +120,13 @@ const fragmentShader = `
   }
 `
 
-export default function Orb({ amplitude = 0 }) {
+/**
+ * `amplitude` drives the orb through React props. `levelRef`, when given,
+ * takes over: the animation loop reads `levelRef.current` every frame, so a
+ * source that updates many times a second (a voice session's audio levels)
+ * moves the orb without re-rendering whatever owns it.
+ */
+export default function Orb({ amplitude = 0, levelRef = null }) {
   const mountRef = useRef(null)
   const stateRef = useRef({
     renderer: null,
@@ -134,6 +140,8 @@ export default function Orb({ amplitude = 0 }) {
 
   const amplitudeRef = useRef(amplitude)
   amplitudeRef.current = amplitude
+  const levelSourceRef = useRef(levelRef)
+  levelSourceRef.current = levelRef
 
   const init = useCallback(() => {
     const container = mountRef.current
@@ -186,7 +194,8 @@ export default function Orb({ amplitude = 0 }) {
       uniforms.uTime.value = t
 
       // Smooth amplitude transition
-      state.smoothAmp += (amplitudeRef.current - state.smoothAmp) * 0.12
+      const target = levelSourceRef.current ? (levelSourceRef.current.current || 0) : amplitudeRef.current
+      state.smoothAmp += (target - state.smoothAmp) * 0.12
       uniforms.uAmplitude.value = state.smoothAmp
 
       // Gentle rotation

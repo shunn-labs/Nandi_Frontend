@@ -1728,3 +1728,340 @@ body {
 .phone-event__device { color: var(--text-muted); font-size: 0.75rem; font-family: var(--font-mono); }
 .app-header__phone { margin-left: 10px; font-size: 0.78rem; color: var(--text-muted); white-space: nowrap; }
 .app-header__phone--on { color: var(--text-secondary); }
+
+/* ── Disabled input-bar buttons (voice mode while dictating) ── */
+.chat-input-bar__action-btn:disabled:not(.chat-input-bar__action-btn--send) {
+  opacity: 0.35;
+  cursor: not-allowed;
+  background: none;
+  color: var(--text-muted);
+}
+
+/* ── Voice mode (see VoiceMode.jsx) ─────────────────────────────────────
+   Docked where the input bar is, so the conversation stays readable above it
+   and the Orb at the top of the chat shows who is talking. */
+.voice-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--cyan-dim);
+  border-radius: var(--radius-lg);
+  padding: 12px 14px;
+  box-shadow: 0 0 24px rgba(0, 212, 255, 0.08);
+}
+.voice-mode--error { border-color: rgba(255, 138, 138, 0.5); box-shadow: none; }
+.voice-mode--loading { color: var(--text-muted); font-size: 0.9rem; }
+
+.voice-mode__head { display: flex; align-items: center; gap: 10px; }
+
+.voice-mode__state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--text-primary);
+  margin-right: auto;
+}
+
+.voice-mode__dot {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+.voice-mode--connecting .voice-mode__dot { background: var(--amber); animation: voice-pulse 1.2s ease-in-out infinite; }
+.voice-mode--listening .voice-mode__dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.voice-mode--thinking .voice-mode__dot { background: var(--amber); box-shadow: 0 0 8px var(--amber); animation: voice-pulse 0.9s ease-in-out infinite; }
+.voice-mode--speaking .voice-mode__dot { background: var(--cyan); box-shadow: 0 0 10px var(--cyan); }
+.voice-mode--error .voice-mode__dot { background: var(--red); }
+
+@keyframes voice-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-mode__dot { animation: none !important; }
+}
+
+.voice-mode__engine {
+  font-size: 0.7rem;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: var(--green);
+  white-space: nowrap;
+  cursor: help;
+}
+.voice-mode__engine--cloud { border-color: rgba(245, 158, 11, 0.45); color: var(--amber); }
+
+.voice-mode__end {
+  background: none;
+  border: 1px solid var(--red);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 5px 14px;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+.voice-mode__end:hover { background: rgba(239, 68, 68, 0.15); }
+
+.voice-mode__body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 32vh;
+  overflow-y: auto;
+  min-height: 1.6em;
+}
+
+.voice-mode__line {
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.voice-mode__line--user { color: var(--text-secondary); }
+
+.voice-mode__who {
+  display: inline-block;
+  min-width: 52px;
+  margin-right: 6px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.voice-mode__line--user .voice-mode__who { color: var(--cyan-dim); }
+.voice-mode__line--bot .voice-mode__who { color: var(--green); }
+
+.voice-mode__progress {
+  font-size: 0.85rem;
+  color: var(--cyan);
+  font-style: italic;
+}
+
+.voice-mode__hint { font-size: 0.9rem; color: var(--text-muted); }
+
+.voice-mode__error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: #ff8a8a;
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.voice-mode__retry,
+.voice-mode__unblock {
+  background: var(--bg-hover);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.voice-mode__retry:hover,
+.voice-mode__unblock:hover { border-color: var(--cyan); }
+.voice-mode__unblock { align-self: flex-start; }
+
+.voice-mode__controls { display: flex; align-items: center; gap: 8px; }
+
+.voice-mode__mute,
+.voice-mode__send {
+  width: 40px; height: 40px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--border-light);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.voice-mode__mute:hover:not(:disabled) { color: var(--cyan); border-color: var(--cyan-dim); }
+.voice-mode__mute--on { color: var(--red); border-color: var(--red); background: rgba(239, 68, 68, 0.12); }
+.voice-mode__send { background: var(--cyan); border-color: var(--cyan); color: var(--bg-deep); }
+.voice-mode__send:hover:not(:disabled) { background: #33e0ff; }
+.voice-mode__mute:disabled,
+.voice-mode__send:disabled { opacity: 0.4; cursor: not-allowed; }
+.voice-mode__send:disabled { background: var(--border); border-color: var(--border); color: var(--text-muted); }
+
+.voice-mode__input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 1rem;
+  padding: 9px 14px;
+  outline: none;
+}
+.voice-mode__input:focus { border-color: var(--cyan-dim); }
+.voice-mode__input::placeholder { color: var(--text-muted); }
+.voice-mode__input:disabled { opacity: 0.6; }
+
+@media (max-width: 480px) {
+  .voice-mode { padding: 10px; }
+  .voice-mode__mute, .voice-mode__send { width: 36px; height: 36px; }
+  .voice-mode__body { max-height: 26vh; }
+}
+
+/* A message that was spoken in voice mode. */
+.msg__via { font-weight: 500; opacity: 0.75; text-transform: none; letter-spacing: 0; }
+
+/* This device's mic is being broadcast — always visible while it is. */
+.app-header__mic-share {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  border-radius: 999px;
+  color: #ff8a8a;
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 3px 10px;
+  white-space: nowrap;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+/* ── Audio tiles in the vision column (see AudioBox.jsx) ── */
+.vbox__dot--idle { background: var(--text-muted); }
+
+.vbox__audio {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+
+.vbox__audio-player { width: 100%; height: 40px; }
+
+.vbox__audio-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+.vbox__audio-meta--error { color: #ff8a8a; }
+
+/* ── Settings: voice rows ── */
+.settings-row__label { display: flex; flex-direction: column; gap: 2px; }
+
+.settings-row__hint {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+  max-width: 34ch;
+}
+
+.settings-row--stack { flex-direction: column; align-items: stretch; gap: 8px; }
+
+.settings-select {
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.settings-url { display: flex; gap: 6px; }
+
+.settings-url__input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  outline: none;
+}
+.settings-url__input:focus { border-color: var(--cyan-dim); }
+
+.settings-url__btn {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color var(--transition);
+}
+.settings-url__btn:hover:not(:disabled) { border-color: var(--cyan); }
+.settings-url__btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.settings-url__error { font-size: 0.8rem; color: #ff8a8a; }
+
+/* ── Live audio streams panel (see AudioStreamsPanel.jsx) ── */
+.streams-panel__row { gap: 12px; }
+
+.streams-panel__info { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+
+.streams-panel__name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.streams-panel__mine {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+.streams-panel__meta { font-size: 0.76rem; color: var(--text-muted); font-family: var(--font-mono); }
+
+.streams-panel__empty { font-size: 0.88rem; color: var(--text-muted); font-style: italic; padding: 10px 0; }
+
+.streams-panel__error {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 138, 138, 0.35);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 138, 138, 0.08);
+  color: #ff8a8a;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+/* Phones: the Voice mode button made six in the input bar. Slightly smaller
+   buttons and gaps give the textarea back the width it took. */
+@media (max-width: 480px) {
+  .chat-input-bar { gap: 2px; padding: 6px 8px; }
+  .chat-input-bar__action-btn,
+  .chat-input-bar__attach-btn { width: 32px; height: 32px; padding: 6px; }
+}

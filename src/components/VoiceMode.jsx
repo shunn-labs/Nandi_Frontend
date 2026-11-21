@@ -1,0 +1,229 @@
+import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { VoiceSession } from '../lib/voiceSession.js'
+import { getVoiceDuplex, getVoiceLang } from '../lib/voicePrefs.js'
+import { IconMic, IconMicOff, IconSend } from './Icons.jsx'
+
+const STATE_LABEL = {
+  idle: 'Voice off',
+  connecting: 'Connecting…',
+  listening: 'Listening',
+  thinking: 'Thinking…',
+  speaking: 'Speaking',
+  error: 'Voice stopped',
+}
+
+const CONNECTED = new Set(['listening', 'thinking', 'speaking'])
+
+// How far each side moves the Orb. The mic level comes from the transport
+// (already 0..1); Nandi's is a raw RMS, which runs much smaller.
+const MIC_GAIN = 3
+const BOT_GAIN = 4
+const MAX_AMPLITUDE = 1.5
+
+const ENGINE_NAME = { local: 'local', elevenlabs: 'cloud' }
+const ENGINE_DETAIL = { local: 'Nandi’s own GPU', elevenlabs: 'ElevenLabs (cloud)' }
+
+/** "local", "cloud" or "local / cloud" (speech recognition / voice), with a tooltip. */
+function engineBadge(engines) {
+  if (!engines || (!engines.stt && !engines.tts)) return null
+  const stt = ENGINE_NAME[engines.stt] || engines.stt || '?'
+  const tts = ENGINE_NAME[engines.tts] || engines.tts || '?'
+  return {
+    text: stt === tts ? stt : `${stt} / ${tts}`,
+    cloud: engines.stt === 'elevenlabs' || engines.tts === 'elevenlabs',
+    title: `Speech recognition: ${ENGINE_DETAIL[engines.stt] || stt} · Voice: ${ENGINE_DETAIL[engines.tts] || tts}`,
+  }
+}
+
+function hintFor(state, muted) {
+  if (state === 'connecting') return 'Connecting to Nandi…'
+  if (state === 'listening') return muted ? 'Your microphone is muted.' : 'Go ahead — Nandi is listening.'
+  if (state === 'thinking') return 'Nandi is thinking…'
+  return ''
+}
+
+/**
+ * VoiceMode — a real-time spoken conversation with Nandi (docked where the
+ * input bar is while it is open).
+ *
+ * The audio server does the listening, the brain and the talking; this panel
+ * shows the state, what was heard, what Nandi is saying and what she is
+ * doing, and offers mute, typing during the conversation, and End.
+ *
+ * Props:
+ *   onTurn({user, reply, status, typed})  a finished exchange, for the chat history
+ *                                         (the browser's chat socket never sees voice turns)
+ *   onLevel(amplitude)                    many times a second, for the Orb
+ *   onClose()                             End was pressed
+ */
+export default function VoiceMode({ onTurn, onLevel, onClose }) {
+  const [state, setState] = useState('connecting')
+  const [error, setError] = useState('')
+  const [userText, setUserText] = useState('')
+  const [botText, setBotText] = useState('')
+  const [progress, setProgress] = useState('')
+  const [engines, setEngines] = useState(null)
+  const [muted, setMuted] = useState(false)
+  const [audioBlocked, setAudioBlocked] = useState(false)
+  const [draft, setDraft] = useState('')
+
+  const sessionRef = useRef(null)
+  const audioRef = useRef(null)
+  // The session's callbacks are wired once; read the parent's current ones.
+  const handlersRef = useRef({ onTurn, onLevel })
+  handlersRef.current = { onTurn, onLevel }
+
+  const handleLevels = useCallback(({ mic, bot }) => {
+    const amplitude = Math.min(MAX_AMPLITUDE, Math.max(mic * MIC_GAIN, bot * BOT_GAIN))
+    handlersRef.current.onLevel?.(amplitude)
+  }, [])
+
+  const start = useCallback(() => {
+    sessionRef.current?.dispose()
+    setState('connecting')
+    setError('')
+    setUserText('')
+    setBotText('')
+    setProgress('')
+    setEngines(null)
+    setMuted(false)
+    setAudioBlocked(false)
+
+    const session = new VoiceSession({
+      onState: setState,
+      onUserText: setUserText,
+      onBotText: setBotText,
+      onProgress: setProgress,
+      onEngines: setEngines,
+      onLevels: handleLevels,
+      onTurn: (turn) => handlersRef.current.onTurn?.(turn),
+      onError: (err) => setError(err?.message || 'Voice mode stopped.'),
+      onAudioBlocked: setAudioBlocked,
+    }, { audioElement: audioRef.current })
+    sessionRef.current = session
+    session.connect({ lang: getVoiceLang(), duplex: getVoiceDuplex() })
+  }, [handleLevels])
+
+  useEffect(() => {
+    // One tick late on purpose: StrictMode mounts, unmounts and mounts again
+    // in development, and two sessions racing for the microphone and for the
+    // voice server's few session slots is the last thing wanted. The first
+    // mount's timer is cleared before it fires.
+    const timer = setTimeout(start, 0)
+    return () => {
+      clearTimeout(timer)
+      sessionRef.current?.dispose()      // the exchange in progress still reaches onTurn
+      sessionRef.current = null
+      handlersRef.current.onLevel?.(0)
+    }
+  }, [start])
+
+  const connected = CONNECTED.has(state)
+
+  const toggleMute = () => {
+    const next = !muted
+    sessionRef.current?.setMuted(next)
+    setMuted(next)
+  }
+
+  const handleSend = (e) => {
+    e.preventDefault()
+    if (sessionRef.current?.sendText(draft)) setDraft('')
+  }
+
+  const badge = engineBadge(engines)
+  const label = connected && muted && state === 'listening' ? 'Muted' : STATE_LABEL[state] || state
+  const hint = hintFor(state, muted)
+
+  return (
+    <section className={`voice-mode voice-mode--${state}`} aria-label="Voice conversation with Nandi">
+      <div className="voice-mode__head">
+        <span className="voice-mode__state" role="status" aria-live="polite">
+          <span className="voice-mode__dot" aria-hidden="true" />
+          {label}
+        </span>
+        {badge && (
+          <span
+            className={`voice-mode__engine${badge.cloud ? ' voice-mode__engine--cloud' : ''}`}
+            title={badge.title}
+          >
+            {badge.text}
+          </span>
+        )}
+        <button className="voice-mode__end" onClick={onClose} title="End voice mode">
+          End
+        </button>
+      </div>
+
+      <div className="voice-mode__body">
+        {error ? (
+          <div className="voice-mode__error" role="alert">
+            <span>{error}</span>
+            <button className="voice-mode__retry" onClick={start}>Try again</button>
+          </div>
+        ) : (
+          <>
+            {userText && (
+              <p className="voice-mode__line voice-mode__line--user">
+                <span className="voice-mode__who">You</span>
+                {userText}
+              </p>
+            )}
+            {botText && (
+              <p className="voice-mode__line voice-mode__line--bot">
+                <span className="voice-mode__who">Nandi</span>
+                {botText}
+              </p>
+            )}
+            {state === 'thinking' && progress && (
+              <p className="voice-mode__progress">{progress}</p>
+            )}
+            {!userText && !botText && hint && <p className="voice-mode__hint">{hint}</p>}
+          </>
+        )}
+        {audioBlocked && (
+          <button
+            className="voice-mode__unblock"
+            onClick={() => sessionRef.current?.resumeAudio()}
+          >
+            🔈 Tap to hear Nandi
+          </button>
+        )}
+      </div>
+
+      <form className="voice-mode__controls" onSubmit={handleSend}>
+        <button
+          type="button"
+          className={`voice-mode__mute${muted ? ' voice-mode__mute--on' : ''}`}
+          onClick={toggleMute}
+          disabled={!connected}
+          aria-pressed={muted}
+          title={muted ? 'Unmute your microphone' : 'Mute your microphone'}
+        >
+          {muted ? <IconMicOff /> : <IconMic />}
+        </button>
+        <input
+          className="voice-mode__input"
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder={connected ? 'Type to Nandi — she answers out loud' : 'Waiting for the voice connection…'}
+          disabled={!connected}
+          aria-label="Type a message during the voice conversation"
+        />
+        <button
+          type="submit"
+          className="voice-mode__send"
+          disabled={!connected || !draft.trim()}
+          title="Send"
+          aria-label="Send"
+        >
+          <IconSend />
+        </button>
+      </form>
+
+      {/* Nandi's voice. Hidden: the Orb and the state label are the UI. */}
+      <audio ref={audioRef} autoPlay playsInline hidden />
+    </section>
+  )
+}

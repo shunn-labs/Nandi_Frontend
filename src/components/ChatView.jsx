@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
 import LogPanel from './LogPanel.jsx'
 import Orb from './Orb.jsx'
 import ChatInput from './ChatInput.jsx'
 import VisionManager from './VisionManager.jsx'
 import SettingsPanel from './SettingsPanel.jsx'
+import AudioStreamsPanel from './AudioStreamsPanel.jsx'
 import Markdown from './Markdown.jsx'
 import PromptCard from './PromptCard.jsx'
 import ActivityCard, { applyActivity } from './ActivityCard.jsx'
@@ -17,6 +18,31 @@ import {
 } from '../lib/wsAdapter.js'
 import { speak, stop as stopTts } from '../lib/ttsPlayer.js'
 import { onUiFrame, sendDisplay } from '../lib/visionControl.js'
+import { stripEmotionTag } from '../lib/emotionTag.js'
+import { micStreamId, publishMic } from '../lib/audioStreams.js'
+import { getDeviceName } from '../lib/clientId.js'
+
+// Voice mode pulls in the Pipecat client and its WebRTC transport — the
+// biggest dependency in the app — so it is only fetched the first time
+// someone opens it. If that fetch fails (offline, or a tab still running the
+// previous deploy asking for a chunk that no longer exists) it degrades to a
+// notice instead of taking the whole app down with it.
+function VoiceModeUnavailable({ onClose }) {
+  return (
+    <div className="voice-mode voice-mode--error" role="alert">
+      <div className="voice-mode__error">
+        <span>Voice mode could not be loaded — the app may have been updated.</span>
+        <button className="voice-mode__retry" onClick={() => window.location.reload()}>Reload</button>
+        <button className="voice-mode__retry" onClick={onClose}>Close</button>
+      </div>
+    </div>
+  )
+}
+
+const VoiceMode = lazy(() => import('./VoiceMode.jsx').catch((err) => {
+  console.error('[voice] could not load voice mode:', err)
+  return { default: VoiceModeUnavailable }
+}))
 
 // How close to the bottom counts as "following the conversation". Below this
 // distance a new message scrolls into view; above it the user is reading
@@ -144,6 +170,15 @@ export default function ChatView({ deviceId, onLogout }) {
   const [logsOpen, setLogsOpen] = useState(false)
   const [visionOpen, setVisionOpen] = useState(false)
   const [orbAmplitude, setOrbAmplitude] = useState(0)
+  // Voice mode: a live conversation through the audio server. Its audio
+  // levels go to the Orb through a ref (many updates a second, no re-render).
+  const [voiceOpen, setVoiceOpen] = useState(false)
+  const voiceLevelRef = useRef(0)
+  const [streamsOpen, setStreamsOpen] = useState(false)
+  // This device's mic, broadcast to the audio server. Owned here so it keeps
+  // running when the streams panel closes.
+  const [micShare, setMicShare] = useState({ on: false, busy: false, error: '' })
+  const micShareRef = useRef(null)
   const [ttsEnabled, setTtsEnabled] = useState(() => {
     return localStorage.getItem('nandi_tts_enabled') !== 'false'
   })
@@ -158,6 +193,10 @@ export default function ChatView({ deviceId, onLogout }) {
   // `ttsEnabled`. A ref keeps the callback reading today's value.
   const ttsEnabledRef = useRef(ttsEnabled)
   useEffect(() => { ttsEnabledRef.current = ttsEnabled }, [ttsEnabled])
+  // Same for voice mode: while it is open Nandi already speaks every reply
+  // she gives there, and a chat reply read out on top would talk over her.
+  const voiceOpenRef = useRef(voiceOpen)
+  useEffect(() => { voiceOpenRef.current = voiceOpen }, [voiceOpen])
 
   // One timeout per outstanding request: requestId → timeout id. A single
   // shared timer was cleared by ANY reply, so the answer to one message also
@@ -280,7 +319,7 @@ export default function ChatView({ deviceId, onLogout }) {
         return next
       })
 
-      if (text && ttsEnabledRef.current) {
+      if (text && ttsEnabledRef.current && !voiceOpenRef.current) {
         speak(
           text,
           (vol) => setOrbAmplitude(vol * 4),
@@ -474,6 +513,97 @@ export default function ChatView({ deviceId, onLogout }) {
     setOrbAmplitude(vol * 5)
   }, [])
 
+  // ── Voice mode ────────────────────────────────────────
+  const handleVoiceOpen = useCallback(() => {
+    voiceOpenRef.current = true      // now, not after the next commit: no reply may start speaking in between
+    stopTts()
+    setOrbAmplitude(0)
+    setVoiceOpen(true)
+  }, [])
+
+  const handleVoiceClose = useCallback(() => {
+    voiceOpenRef.current = false
+    setVoiceOpen(false)
+    voiceLevelRef.current = 0
+  }, [])
+
+  const handleVoiceLevel = useCallback((amplitude) => {
+    voiceLevelRef.current = amplitude
+  }, [])
+
+  // A finished voice exchange. It went through the audio server's own brain
+  // socket, so the chat socket never saw it — it is added to the history here.
+  const handleVoiceTurn = useCallback(({ user, reply, status }) => {
+    const ts = Date.now()
+    const added = []
+    if (user) added.push({ role: 'user', text: user, ts, voice: true })
+    if (reply) {
+      added.push({ role: 'ai', text: reply, ts, voice: true, fromServer: true, isError: status === 'error' })
+    }
+    if (!added.length) return
+    userScrolledUpRef.current = false
+    setMessages(prev => [...prev, ...added])
+  }, [])
+
+  // ── Live audio streams ────────────────────────────────
+  const handleListenStream = useCallback((stream) => {
+    visionMgrRef.current?.openAudioStream(stream.id, stream.name ? `${stream.name} (live)` : stream.id)
+    setVisionOpen(true)
+    setStreamsOpen(false)
+  }, [])
+
+  const stopMicShare = useCallback(() => {
+    micShareRef.current?.stop?.()
+    micShareRef.current = null
+  }, [])
+
+  const handleToggleMicShare = useCallback(async (next) => {
+    stopMicShare()
+    if (!next) {
+      setMicShare({ on: false, busy: false, error: '' })
+      return
+    }
+    // Stands for this attempt until it is replaced or stopped; anything that
+    // arrives for an older attempt is dropped.
+    const attempt = { stop: null }
+    micShareRef.current = attempt
+    const current = () => micShareRef.current === attempt
+    const lost = (message) => {
+      if (!current()) return
+      stopMicShare()
+      setMicShare({ on: false, busy: false, error: message })
+    }
+    setMicShare({ on: true, busy: true, error: '' })
+    try {
+      const share = await publishMic(micStreamId(), `${getDeviceName()} mic`, {
+        onState: (state) => {
+          if (state === 'failed') lost('The microphone stream dropped. Turn sharing on again to reconnect.')
+          else if (state === 'ended') lost('The microphone stopped (unplugged, or access was withdrawn).')
+        },
+      })
+      if (!current()) {
+        share.stop()
+        return
+      }
+      attempt.stop = share.stop
+      setMicShare({ on: true, busy: false, error: '' })
+    } catch (err) {
+      if (!current()) return
+      micShareRef.current = null
+      const denied = err?.name === 'NotAllowedError'
+      setMicShare({
+        on: false,
+        busy: false,
+        error: denied
+          ? 'Microphone blocked. Allow mic access for this site, then try again.'
+          : err?.userMessage || `Could not share the microphone: ${err?.message || 'unknown error'}`,
+      })
+    }
+  }, [stopMicShare])
+
+  // A broadcast must not outlive the signed-in view.
+  useEffect(() => stopMicShare, [stopMicShare])
+
   // ── TTS toggle ─────────────────────────────────────────
   // Shared by the speaker button and the Settings toggle so the two can never
   // disagree about whether TTS is on.
@@ -555,6 +685,15 @@ export default function ChatView({ deviceId, onLogout }) {
             <span className={`app-header__dot${connected ? '' : ' app-header__dot--off'}`} />
             {connected ? 'Online' : 'Offline'}
           </span>
+          {micShare.on && !micShare.busy && (
+            <button
+              className="app-header__mic-share"
+              onClick={() => setStreamsOpen(true)}
+              title={`This device's microphone is being shared as ${micStreamId()}`}
+            >
+              🎙 Mic shared
+            </button>
+          )}
           {Object.entries(capDevices).filter(([, list]) => list.length > 0).map(([domain, list]) => (
             <span key={domain} className="app-header__phone app-header__phone--on"
               title={list.map(d => `${d.id}${d.model ? ': ' + d.model : ''}${d.busy ? ' (busy)' : ''}`).join('\n')}>
@@ -616,7 +755,7 @@ export default function ChatView({ deviceId, onLogout }) {
 
       {/* ─── Chat Area (center, ChatGPT-style width) ─── */}
       <main className="chat-area">
-        <Orb amplitude={orbAmplitude} />
+        <Orb amplitude={orbAmplitude} levelRef={voiceOpen ? voiceLevelRef : null} />
 
         <div className="messages-area" ref={messagesAreaRef}>
           <div className="messages-inner">
@@ -647,6 +786,7 @@ export default function ChatView({ deviceId, onLogout }) {
               <div key={i} className={`msg msg--${msg.role}`}>
                 <span className="msg__label">
                   {msg.role === 'user' ? 'You' : 'Nandi'}
+                  {msg.voice && <span className="msg__via" title="Said in voice mode"> · voice</span>}
                 </span>
                 <div className="msg__bubble">
                   {msg.thinking ? (
@@ -661,10 +801,12 @@ export default function ChatView({ deviceId, onLogout }) {
                     // Only the assistant's text is markdown. The user's own
                     // message is shown exactly as typed.
                     <>
+                      {/* A voice reply may open with an emotion tag ("[calm] ")
+                          for the speech voice; it is never shown. */}
                       {msg.isError ? (
-                        <div className="msg__error-text"><Markdown>{msg.text}</Markdown></div>
+                        <div className="msg__error-text"><Markdown>{stripEmotionTag(msg.text)}</Markdown></div>
                       ) : (
-                        <Markdown>{msg.text}</Markdown>
+                        <Markdown>{stripEmotionTag(msg.text)}</Markdown>
                       )}
                       {msg.errors?.length > 0 && <ProblemList errors={msg.errors} />}
                     </>
@@ -695,14 +837,28 @@ export default function ChatView({ deviceId, onLogout }) {
 
         <div className="chat-input-wrap">
           <div className="chat-input-inner">
-            <ChatInput
-              ref={chatInputRef}
-              onSend={handleSend}
-              onCameraOpen={handleCameraClick}
-              onMicVolume={handleMicVolume}
-              ttsActive={ttsEnabled}
-              onTtsToggle={handleTtsToggle}
-            />
+            {voiceOpen && (
+              <Suspense fallback={<div className="voice-mode voice-mode--connecting voice-mode--loading">Starting voice mode…</div>}>
+                <VoiceMode
+                  onTurn={handleVoiceTurn}
+                  onLevel={handleVoiceLevel}
+                  onClose={handleVoiceClose}
+                />
+              </Suspense>
+            )}
+            {/* Hidden rather than unmounted during voice mode, so a half-typed
+                message and its attachments are still there afterwards. */}
+            <div hidden={voiceOpen}>
+              <ChatInput
+                ref={chatInputRef}
+                onSend={handleSend}
+                onCameraOpen={handleCameraClick}
+                onMicVolume={handleMicVolume}
+                ttsActive={ttsEnabled}
+                onTtsToggle={handleTtsToggle}
+                onVoiceMode={handleVoiceOpen}
+              />
+            </div>
           </div>
         </div>
       </main>
@@ -725,6 +881,17 @@ export default function ChatView({ deviceId, onLogout }) {
           onTtsChange={setTts}
           showLogs={showLogs}
           onShowLogsChange={handleShowLogsChange}
+          onOpenAudioStreams={() => { setSettingsOpen(false); setStreamsOpen(true) }}
+        />
+      )}
+
+      {/* ─── Live audio streams ─── */}
+      {streamsOpen && (
+        <AudioStreamsPanel
+          onClose={() => setStreamsOpen(false)}
+          onListen={handleListenStream}
+          micShare={micShare}
+          onToggleMicShare={handleToggleMicShare}
         />
       )}
 

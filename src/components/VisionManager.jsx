@@ -12,29 +12,43 @@ import { startProducer } from '../lib/webrtcConsumer.js'
 let _boxIdCounter = 0
 const nextBoxId = () => `vbox_${++_boxIdCounter}_${Date.now()}`
 
-// Every vision answer can push a frame, so frames are capped. Only frames are
-// ever dropped to make room — never a stream or the user's camera preview.
+// Every vision answer can push a frame, and every spoken announcement an
+// audio clip, so both are capped. Only those are ever dropped to make room —
+// never a stream, a live audio tile or the user's camera preview.
 const MAX_FRAME_BOXES = 12
+const MAX_AUDIO_BOXES = 6
 
-/** Drops the oldest frame boxes beyond MAX_FRAME_BOXES, leaving the rest alone. */
-function capFrames(boxes) {
-  let excess = boxes.filter(b => b.type === 'frame').length - MAX_FRAME_BOXES
+/** Drops the oldest boxes of `type` beyond `max`, leaving the rest alone. */
+function capType(boxes, type, max) {
+  let excess = boxes.filter(b => b.type === type).length - max
   if (excess <= 0) return boxes
   return boxes.filter(b => {
-    if (b.type !== 'frame' || excess <= 0) return true
+    if (b.type !== type || excess <= 0) return true
     excess -= 1
     return false
   })
+}
+
+const capFrames = (boxes) => capType(boxes, 'frame', MAX_FRAME_BOXES)
+const capAudio = (boxes) => capType(boxes, 'audio', MAX_AUDIO_BOXES)
+
+/** Adds a live audio tile for `streamId` unless one is already open. */
+function withAudioStream(boxes, id, streamId, label) {
+  if (boxes.some(b => b.id === id)) return boxes
+  return [...boxes, { id, type: 'audio_stream', label: label || streamId, streamId }]
 }
 
 /**
  * VisionManager — owns the stack of VisionBox tiles in the right column.
  *
  *  Features:
- *   - Listens for vision-agent commands (show_frame / show_stream / close / close_all)
+ *   - Listens for display commands (show_frame / show_stream / play_audio /
+ *     show_audio_stream / close / close_all)
  *   - A show_frame whose wid is already on screen updates that box in place;
  *     any other frame stacks as a new box (the 12 most recent are kept)
  *   - Each show_stream is deduped by stream_id (so duplicate calls reuse the same box)
+ *   - play_audio opens an audio clip tile (deduped by wid; the 6 most recent
+ *     are kept), show_audio_stream a live listening tile (deduped by wid)
  *   - Manual stream consumer input at the top of the column
  *   - "Close All" button
  *   - Camera button on the input bar triggers a producer (with switch front/back)
@@ -109,14 +123,45 @@ const VisionManager = forwardRef(function VisionManager({ onCaptureToChat, onAct
         onActivityRef.current?.()
       }
 
+      // A clip from the audio server: a signed URL that needs no auth header.
+      else if (action === 'play_audio' && /^https?:\/\//i.test(msg.url || '')) {
+        const clip = {
+          type: 'audio',
+          label: label || 'Audio',
+          url: msg.url,
+          mime: msg.mime || '',
+          autoplay: msg.autoplay !== false,
+          durationS: Number(msg.duration_s) || 0,
+        }
+        setBoxes(prev => {
+          const existing = wid ? prev.find(b => b.id === wid) : null
+          // The same wid again is the same clip: keep the tile (and wherever
+          // its playback is) rather than restarting or duplicating it.
+          if (existing?.type === 'audio') {
+            return existing.url === clip.url ? prev : prev.map(b => (b.id === wid ? { ...b, ...clip } : b))
+          }
+          const id = wid && !existing ? wid : nextBoxId()
+          return capAudio([...prev, { id, ...clip }])
+        })
+        onActivityRef.current?.()
+      }
+
+      // A live microphone on the audio server, heard over WebRTC.
+      else if (action === 'show_audio_stream' && stream_id) {
+        const id = wid || `audio_stream_${stream_id}`
+        setBoxes(prev => withAudioStream(prev, id, stream_id, label))
+        onActivityRef.current?.()
+      }
+
       else if (action === 'close' && wid) {
         setBoxes(prev => prev.filter(b => b.id !== wid))
       }
 
       else if (action === 'close_all') {
-        // Server-initiated, so it only clears what the server put up. The
-        // user's own camera preview stays, and its producer keeps running —
-        // the "Close all" button (handleCloseAll) is what stops the camera.
+        // Server-initiated, so it only clears what the server put up — audio
+        // tiles included (they stop and hang up as they unmount). The user's
+        // own camera preview stays, and its producer keeps running — the
+        // "Close all" button (handleCloseAll) is what stops the camera.
         setBoxes(prev => prev.filter(b => b.type === 'camera'))
       }
     })
@@ -224,10 +269,17 @@ const VisionManager = forwardRef(function VisionManager({ onCaptureToChat, onAct
     setCameraOn(false)
   }, [])
 
+  // ── Live audio tile opened from the audio streams panel ──
+  const openAudioStream = useCallback((streamId, label) => {
+    if (!streamId) return
+    setBoxes(prev => withAudioStream(prev, `audio_stream_${streamId}`, streamId, label))
+  }, [])
+
   useImperativeHandle(ref, () => ({
     startCameraProducer,
     stopCameraProducer,
     isCameraOn: () => cameraOn,
+    openAudioStream,
   }))
 
   return (

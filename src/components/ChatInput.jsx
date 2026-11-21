@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle } from 'react'
 import Attachment from './Attachment.jsx'
-import { IconPaperclip, IconCamera, IconMic, IconSpeaker, IconSend } from './Icons.jsx'
+import { IconPaperclip, IconCamera, IconMic, IconSpeaker, IconSend, IconVoice } from './Icons.jsx'
 import { startRecording, stopRecording, isRecording } from '../lib/audioRecorder.js'
 import { stop as stopTts, getIsPlaying } from '../lib/ttsPlayer.js'
 
@@ -10,6 +10,7 @@ const ChatInput = forwardRef(function ChatInput({
   onMicVolume,
   ttsActive,
   onTtsToggle,
+  onVoiceMode,
 }, ref) {
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState([])
@@ -96,12 +97,14 @@ const ChatInput = forwardRef(function ChatInput({
         err?.name === 'NotAllowedError' || /permission/i.test(err?.message || '')
       const noDevice = err?.name === 'NotFoundError'
 
+      // transcribe() says in words what failed (session expired, speech
+      // service down, server unreachable); anything else gets the raw reason.
       setMicError(
         denied
           ? 'Microphone blocked. Allow mic access for this site, then try again.'
           : noDevice
             ? 'No microphone found.'
-            : `Could not transcribe: ${err?.message || 'unknown error'}`
+            : err?.userMessage || `Could not transcribe: ${err?.message || 'unknown error'}`
       )
     }
   }
@@ -169,6 +172,21 @@ const ChatInput = forwardRef(function ChatInput({
         >
           <IconMic />
         </button>
+
+        {/* Voice mode — a live, spoken conversation (the mic above is
+            one-shot dictation into this box). Not while dictating: the two
+            would fight over the microphone. */}
+        {onVoiceMode && (
+          <button
+            className="chat-input-bar__action-btn"
+            title="Voice mode — talk with Nandi"
+            aria-label="Voice mode"
+            onClick={onVoiceMode}
+            disabled={recording}
+          >
+            <IconVoice />
+          </button>
+        )}
 
         {/* Speaker */}
         <button
