@@ -10,6 +10,9 @@
 //    activity                 a live job card (steps, outcome, Stop)
 //    devices / event          what each capability has connected; things that happened
 //    ui_snapshot              all of the above when this socket registers
+//    notification(s)          a reminder or scheduled-task result; on register,
+//                             the unread ones that arrived while away
+//    tasks_changed            a scheduled task was created, changed or ran
 //  Subscribe with onUiFrame(); answer with sendDisplay().
 //
 //  Hardened against:
@@ -47,7 +50,7 @@ let lastError = ''
 // here when the socket drops, so device status never shows stale.
 const UI_ACTIONS = new Set([
   'prompt', 'prompt_closed', 'prompt_invalid', 'activity', 'activity_stop_ack',
-  'devices', 'event', 'ui_snapshot',
+  'devices', 'event', 'ui_snapshot', 'notification', 'notifications', 'tasks_changed',
 ])
 const uiListeners = new Set()
 
@@ -192,8 +195,9 @@ function connect() {
     }
 
     // Forward display commands to handler
-    //   { action: 'show_frame',  image_b64, mime, label, wid, request_id, camera }
+    //   { action: 'show_frame',  image_b64, mime, label, wid, request_id, camera, file_id }
     //   { action: 'show_stream', stream_id, label, wid, request_id }
+    //   { action: 'show_file',   file: {file_id, filename, mime, size, kind, ...}, url, label, wid }
     //   { action: 'play_audio',  url, mime, label, wid, duration_s, autoplay, request_id }
     //   { action: 'show_audio_stream', stream_id, label, wid, request_id }
     //   { action: 'close',       wid }

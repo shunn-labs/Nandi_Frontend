@@ -14,11 +14,11 @@ const STATE_LABEL = {
 
 const CONNECTED = new Set(['listening', 'thinking', 'speaking'])
 
-// How far each side moves the Orb. The mic level comes from the transport
+// How far each side moves the core. The mic level comes from the transport
 // (already 0..1); Nandi's is a raw RMS, which runs much smaller.
 const MIC_GAIN = 3
 const BOT_GAIN = 4
-const MAX_AMPLITUDE = 1.5
+const MAX_AMPLITUDE = 1
 
 const ENGINE_NAME = { local: 'local', elevenlabs: 'cloud' }
 const ENGINE_DETAIL = { local: 'Nandi’s own GPU', elevenlabs: 'ElevenLabs (cloud)' }
@@ -47,16 +47,19 @@ function hintFor(state, muted) {
  * input bar is while it is open).
  *
  * The audio server does the listening, the brain and the talking; this panel
- * shows the state, what was heard, what Nandi is saying and what she is
- * doing, and offers mute, typing during the conversation, and End.
+ * shows the state and what Nandi is doing, and offers mute, typing during the
+ * conversation, and End. What was heard and what Nandi is saying go to the
+ * screen's captions through onCaption; without it the panel shows them itself.
  *
  * Props:
- *   onTurn({user, reply, status, typed})  a finished exchange, for the chat history
+ *   onTurn({user, reply, status, typed})  a finished exchange, for the transcript
  *                                         (the browser's chat socket never sees voice turns)
- *   onLevel(amplitude)                    many times a second, for the Orb
+ *   onLevel(amplitude)                    many times a second (0..1), for the core
+ *   onState(state)                        connecting | listening | thinking | speaking | error
+ *   onCaption({user, bot})                what was heard / what Nandi is saying, as it changes
  *   onClose()                             End was pressed
  */
-export default function VoiceMode({ onTurn, onLevel, onClose }) {
+export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose }) {
   const [state, setState] = useState('connecting')
   const [error, setError] = useState('')
   const [userText, setUserText] = useState('')
@@ -70,8 +73,11 @@ export default function VoiceMode({ onTurn, onLevel, onClose }) {
   const sessionRef = useRef(null)
   const audioRef = useRef(null)
   // The session's callbacks are wired once; read the parent's current ones.
-  const handlersRef = useRef({ onTurn, onLevel })
-  handlersRef.current = { onTurn, onLevel }
+  const handlersRef = useRef({ onTurn, onLevel, onState, onCaption })
+  handlersRef.current = { onTurn, onLevel, onState, onCaption }
+
+  useEffect(() => { handlersRef.current.onState?.(state) }, [state])
+  useEffect(() => { handlersRef.current.onCaption?.({ user: userText, bot: botText }) }, [userText, botText])
 
   const handleLevels = useCallback(({ mic, bot }) => {
     const amplitude = Math.min(MAX_AMPLITUDE, Math.max(mic * MIC_GAIN, bot * BOT_GAIN))
@@ -115,6 +121,7 @@ export default function VoiceMode({ onTurn, onLevel, onClose }) {
       sessionRef.current?.dispose()      // the exchange in progress still reaches onTurn
       sessionRef.current = null
       handlersRef.current.onLevel?.(0)
+      handlersRef.current.onState?.('idle')
     }
   }, [start])
 
@@ -163,13 +170,13 @@ export default function VoiceMode({ onTurn, onLevel, onClose }) {
           </div>
         ) : (
           <>
-            {userText && (
+            {!onCaption && userText && (
               <p className="voice-mode__line voice-mode__line--user">
                 <span className="voice-mode__who">You</span>
                 {userText}
               </p>
             )}
-            {botText && (
+            {!onCaption && botText && (
               <p className="voice-mode__line voice-mode__line--bot">
                 <span className="voice-mode__who">Nandi</span>
                 {botText}
@@ -178,7 +185,9 @@ export default function VoiceMode({ onTurn, onLevel, onClose }) {
             {state === 'thinking' && progress && (
               <p className="voice-mode__progress">{progress}</p>
             )}
-            {!userText && !botText && hint && <p className="voice-mode__hint">{hint}</p>}
+            {(onCaption || (!userText && !botText)) && !(state === 'thinking' && progress) && hint && (
+              <p className="voice-mode__hint">{hint}</p>
+            )}
           </>
         )}
         {audioBlocked && (
@@ -222,7 +231,7 @@ export default function VoiceMode({ onTurn, onLevel, onClose }) {
         </button>
       </form>
 
-      {/* Nandi's voice. Hidden: the Orb and the state label are the UI. */}
+      {/* Nandi's voice. Hidden: the core and the state label are the UI. */}
       <audio ref={audioRef} autoPlay playsInline hidden />
     </section>
   )

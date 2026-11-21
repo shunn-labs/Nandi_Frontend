@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { listen, listStreams } from '../lib/audioStreams.js'
 
-// How often a live tile re-checks whether the mic behind it is on air.
+// How often a live card re-checks whether the mic behind it is on air.
 const STREAM_POLL_MS = 5000
 const RETRY_BASE_MS = 2000
 const RETRY_MAX_MS = 15000
@@ -11,20 +11,14 @@ function formatDuration(seconds) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
-function TileHeader({ dot, label, onClose }) {
+// The card around the content carries the title and Close; this is the status
+// line inside it.
+function Status({ dot, children, error = false }) {
   return (
-    <div className="vbox__header">
-      <span className="vbox__title">
-        <span className={`vbox__dot vbox__dot--${dot}`} />
-        <span aria-hidden="true">🔊</span>
-        {label}
-      </span>
-      <div className="vbox__btns">
-        <button className="vbox__btn vbox__btn--close" title="Close" onClick={onClose}>
-          ✕
-        </button>
-      </div>
-    </div>
+    <span className={`abox__status${error ? ' abox__status--error' : ''}`} role="status">
+      <span className={`abox__dot abox__dot--${dot}`} aria-hidden="true" />
+      {children}
+    </span>
   )
 }
 
@@ -32,9 +26,9 @@ function TileHeader({ dot, label, onClose }) {
  * A clip the brain sent (play_audio): Nandi speaking, a recording from a mic.
  * The URL is signed and needs no auth header, so the element plays it
  * directly. Browsers may refuse to autoplay sound; the controls stay usable
- * either way and the tile says so.
+ * either way and the card says so.
  */
-function AudioClipBox({ box, onClose }) {
+function AudioClipBox({ box }) {
   const audioRef = useRef(null)
   const [status, setStatus] = useState('ready')     // ready | playing | blocked | error
 
@@ -54,48 +48,41 @@ function AudioClipBox({ box, onClose }) {
     return () => { try { el?.pause() } catch {} }
   }, [])
 
+  const dot = status === 'playing' ? 'live' : status === 'error' ? 'failed' : 'idle'
+  let text = status === 'playing' ? 'Playing' : 'Ready'
+  if (status === 'blocked') text = 'Autoplay was blocked — press ▶ to listen.'
+  if (status === 'error') text = 'This clip could not be loaded — its link may have expired.'
+
   return (
-    <div className="vbox vbox--audio">
-      <TileHeader
-        dot={status === 'playing' ? 'live' : status === 'error' ? 'failed' : 'idle'}
-        label={box.label || 'Audio'}
-        onClose={() => onClose?.(box.id)}
+    <div className="abox">
+      <audio
+        ref={audioRef}
+        className="abox__player"
+        src={box.url}
+        controls
+        autoPlay={!!box.autoplay}
+        preload="auto"
+        onPlay={() => setStatus('playing')}
+        onPause={() => setStatus(s => (s === 'error' ? s : 'ready'))}
+        onEnded={() => setStatus('ready')}
+        onError={() => setStatus('error')}
       />
-      <div className="vbox__audio">
-        <audio
-          ref={audioRef}
-          className="vbox__audio-player"
-          src={box.url}
-          controls
-          autoPlay={!!box.autoplay}
-          preload="auto"
-          onPlay={() => setStatus('playing')}
-          onPause={() => setStatus(s => (s === 'error' ? s : 'ready'))}
-          onEnded={() => setStatus('ready')}
-          onError={() => setStatus('error')}
-        />
-        <div className="vbox__audio-meta">
-          {status === 'blocked' && <span>Autoplay was blocked — press ▶ to listen.</span>}
-          {status === 'error' && (
-            <span className="vbox__audio-meta--error">This clip could not be loaded — its link may have expired.</span>
-          )}
-          {status !== 'blocked' && status !== 'error' && box.durationS > 0 && (
-            <span>{formatDuration(box.durationS)}</span>
-          )}
-        </div>
+      <div className="abox__meta">
+        <Status dot={dot} error={status === 'error'}>{text}</Status>
+        {status !== 'error' && box.durationS > 0 && <span>{formatDuration(box.durationS)}</span>}
       </div>
     </div>
   )
 }
 
 /**
- * A live microphone (show_audio_stream, or Listen in the audio streams
+ * A live microphone (show_audio_stream, or Listen in the live audio
  * panel), heard over WebRTC from the audio server. Shows whether the mic is
  * on air (polled from GET /v1/streams) and lets the listener stop and start
- * again; a dropped connection is retried with backoff. Closing the tile
+ * again; a dropped connection is retried with backoff. Closing the card
  * closes the peer connection and DELETEs the server session.
  */
-function AudioStreamBox({ box, onClose }) {
+function AudioStreamBox({ box }) {
   const audioRef = useRef(null)
   const [listening, setListening] = useState(true)
   const [conn, setConn] = useState('connecting')   // connecting | live | disconnected | failed | closed | error
@@ -197,34 +184,30 @@ function AudioStreamBox({ box, onClose }) {
   }
 
   return (
-    <div className="vbox vbox--audio">
-      <TileHeader dot={dot} label={box.label || box.streamId} onClose={() => onClose?.(box.id)} />
-      <div className="vbox__audio">
-        <audio ref={audioRef} className="vbox__audio-player" controls autoPlay playsInline />
-        <div className="vbox__audio-meta">
-          <span className={conn === 'error' && listening ? 'vbox__audio-meta--error' : ''} role="status">
-            {status}
-          </span>
-          <button className="vbox__btn" onClick={toggle} title={listening ? 'Stop listening' : 'Listen again'}>
-            {listening ? 'Stop' : 'Listen'}
-          </button>
-        </div>
-        {blocked && listening && (
-          <div className="vbox__audio-meta">Your browser blocked autoplay — press ▶ to hear it.</div>
-        )}
+    <div className="abox">
+      <audio ref={audioRef} className="abox__player" controls autoPlay playsInline />
+      <div className="abox__meta">
+        <Status dot={dot} error={conn === 'error' && listening}>{status}</Status>
+        <button className="devices__btn" onClick={toggle} title={listening ? 'Stop listening' : 'Listen again'}>
+          {listening ? 'Stop' : 'Listen'}
+        </button>
       </div>
+      {blocked && listening && (
+        <div className="abox__meta">Your browser blocked autoplay — press ▶ to hear it.</div>
+      )}
     </div>
   )
 }
 
 /**
- * AudioBox — an audio tile in the vision column.
+ * AudioBox — the content of an audio card on the stage (the card carries the
+ * title and Close; closing unmounts this, which stops playback and hangs up).
  *
  * box.type === 'audio'         { url, mime, label, autoplay, durationS }  (play_audio)
  * box.type === 'audio_stream'  { streamId, label }                        (show_audio_stream)
  */
-export default function AudioBox({ box, onClose }) {
+export default function AudioBox({ box }) {
   return box.type === 'audio_stream'
-    ? <AudioStreamBox box={box} onClose={onClose} />
-    : <AudioClipBox box={box} onClose={onClose} />
+    ? <AudioStreamBox box={box} />
+    : <AudioClipBox box={box} />
 }

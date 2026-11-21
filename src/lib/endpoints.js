@@ -69,6 +69,11 @@ export function getVisionSignalUrl() {
   )
 }
 
+/** http(s) base of the vision server's REST API, from the signaling URL. */
+export function getVisionApiBase() {
+  return getVisionSignalUrl().replace(/^ws/, 'http').replace(/\/ws\/signal\/?$/, '')
+}
+
 // ── Nandi Audio Server ──────────────────────────────────────
 // STT (/v1/stt), TTS (/v1/tts), voice conversation over WebRTC (/v1/voice/offer)
 // and live audio streams (/v1/streams). Every endpoint takes the brain JWT the

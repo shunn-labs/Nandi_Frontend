@@ -1,14 +1,22 @@
-import React, { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
-import LogPanel from './LogPanel.jsx'
-import Orb from './Orb.jsx'
+import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
+import TopBar, { AmbientClock } from './TopBar.jsx'
+import Core from './Core.jsx'
+import CardStack from './CardStack.jsx'
+import JobStrip from './JobStrip.jsx'
+import Captions from './Captions.jsx'
+import Toasts from './Toasts.jsx'
 import ChatInput from './ChatInput.jsx'
-import VisionManager from './VisionManager.jsx'
+import Console from './Console.jsx'
+import CommandPalette from './CommandPalette.jsx'
 import SettingsPanel from './SettingsPanel.jsx'
 import AudioStreamsPanel from './AudioStreamsPanel.jsx'
+import VisionBox from './VisionBox.jsx'
 import Markdown from './Markdown.jsx'
+import ProblemList from './ProblemList.jsx'
 import PromptCard from './PromptCard.jsx'
-import ActivityCard, { applyActivity } from './ActivityCard.jsx'
-import { IconSettings, IconLogs } from './Icons.jsx'
+import NotificationCard from './NotificationCard.jsx'
+import { applyActivity } from './ActivityCard.jsx'
+import useVisionBoxes from '../hooks/useVisionBoxes.js'
 import {
   ensureConnection,
   onAuthFailure,
@@ -16,8 +24,16 @@ import {
   onMessage,
   sendMessage,
 } from '../lib/wsAdapter.js'
-import { speak, stop as stopTts } from '../lib/ttsPlayer.js'
+import { speak, stop as stopTts, getIsPlaying } from '../lib/ttsPlayer.js'
+import { playChime } from '../lib/chime.js'
 import { onUiFrame, sendDisplay } from '../lib/visionControl.js'
+import { markNotificationsRead } from '../lib/filesApi.js'
+import { scheduleText, waitingText } from '../lib/taskText.js'
+import { THEMES, SCHEMES, applyTheme, applyScheme, loadTheme, loadScheme } from '../lib/themes.js'
+import {
+  asText, toProblem, findPending, insertCard, promptMessage, eventMessage, notificationMessage,
+  isOpenPrompt, cardLabel, needsPanel, firstSentence,
+} from '../lib/messages.js'
 import { stripEmotionTag } from '../lib/emotionTag.js'
 import { micStreamId, publishMic } from '../lib/audioStreams.js'
 import { getDeviceName } from '../lib/clientId.js'
@@ -44,166 +60,120 @@ const VoiceMode = lazy(() => import('./VoiceMode.jsx').catch((err) => {
   return { default: VoiceModeUnavailable }
 }))
 
-// How close to the bottom counts as "following the conversation". Below this
-// distance a new message scrolls into view; above it the user is reading
-// history and must be left alone.
-const FOLLOW_THRESHOLD_PX = 120
+// What the core shows for each voice-mode state.
+const VOICE_CORE = { connecting: 'thinking', listening: 'listening', thinking: 'thinking', speaking: 'speaking' }
 
 // How long a "Thinking…" placeholder may go without hearing anything before it
 // is called a failure. Every progress frame (the server sends a heartbeat at
 // least every ~15 s) restarts it, so a long vision job that keeps reporting in
 // is never cut off — only silence is.
-// Without this, anything that stops a reply from arriving — a dropped socket, a
-// server that never answers, a queued message on a connection that never comes
-// back — left the placeholder spinning for the rest of the session.
 const REPLY_TIMEOUT_MS = 90000
 
-const prefersReducedMotion = () =>
-  window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+// Answered prompts stay on screen this long, so their outcome can be read.
+const DONE_PROMPT_MS = 4000
 
-// Index of the placeholder still waiting on `requestId`, or -1.
-const findPending = (list, requestId) =>
-  list.findIndex(m => m.thinking && m.requestId === requestId)
+// Only the newest long answers keep a card; older ones live in the transcript.
+const MAX_ANSWER_CARDS = 3
 
-// Server-supplied fields are coerced to strings before they reach JSX: an
-// object there would throw during render and blank the whole chat.
-const asText = (v) => (v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v))
+// Two presses of Esc within this window clear the whole screen.
+const DOUBLE_ESC_MS = 600
 
-const toProblem = (e) => (e && typeof e === 'object'
-  ? { stage: asText(e.stage), source: asText(e.source), message: asText(e.message), hint: asText(e.hint) }
-  : { stage: '', source: '', message: asText(e), hint: '' })
-
-// The structured errors attached to an answer — a camera that was offline, a
-// tool that failed. Collapsed by default: the answer already says in words
-// what went wrong, and this is the detail behind it.
-function ProblemList({ errors }) {
-  return (
-    <details className="msg__problems">
-      <summary>⚠ {errors.length} {errors.length === 1 ? 'problem' : 'problems'}</summary>
-      <ul>
-        {errors.map((err, i) => {
-          const where = [err.stage, err.source].filter(Boolean).join(' · ')
-          return (
-            <li key={i}>
-              {where && <span className="msg__problem-where">{where}</span>}
-              {where && err.message && ' — '}
-              {err.message}
-              {err.hint && <span className="msg__problem-hint">Fix: {err.hint}</span>}
-            </li>
-          )
-        })}
-      </ul>
-    </details>
-  )
+// What a vision card shows under its title: what it is and where it comes
+// from (the stream id, or the camera a snapshot was taken from).
+function visionSource(b) {
+  if (b.type === 'frame') return b.camera ? `snapshot · ${b.camera}` : 'snapshot'
+  if (b.type === 'file') return `file · ${b.file?.kind || 'document'}`
+  if (b.type === 'audio') return 'audio clip'
+  if (b.type === 'audio_stream') return `live audio · ${b.streamId}`
+  return `${b.type === 'camera' ? 'this device' : 'live'} · ${b.streamId}`
 }
+// Cards that take their content's height instead of a picture's shape.
+const NATURAL_HEIGHT = new Set(['file', 'audio', 'audio_stream'])
+// Shape of a vision card until its picture has loaded.
+const DEFAULT_ASPECT = 16 / 9
 
-// ── Cards from the brain (approvals, questions, live jobs, events) ─────────
-// Any capability can ask the user or show a running job through the brain
-// (MCP elicitation / progress → Brain's interaction service → the display
-// channel). A card goes before a pending "Thinking…" placeholder, so the reply
-// still replaces the placeholder and lands under the card.
-function insertCard(list, card) {
-  const last = list[list.length - 1]
-  return (last && last.role === 'ai' && last.thinking)
-    ? [...list.slice(0, -1), card, last]
-    : [...list, card]
-}
+const isTyping = (el) => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
 
-function promptMessage(f) {
-  return {
-    role: 'prompt', id: asText(f.id), kind: f.kind === 'form' ? 'form' : 'confirm',
-    source: asText(f.source), title: asText(f.title), message: asText(f.message), detail: asText(f.detail),
-    device: asText(f.device), fields: Array.isArray(f.fields) ? f.fields : [],
-    suggestions: Array.isArray(f.suggestions) ? f.suggestions.map(asText) : [],
-    expiresAt: Number(f.expires_at) || Date.now() + 60000, status: 'open', ts: Date.now(),
-  }
-}
-
-function eventMessage(f) {
-  const e = (f.event && typeof f.event === 'object') ? f.event : {}
-  const title = asText(e.title || e.kind || 'Something happened')
-  const text = asText(e.text)
-  return { role: 'event', id: `ev-${asText(e.id) || Date.now()}`, source: asText(f.domain),
-           device: asText(e.device), text: text ? `${title} — ${text}` : title, ts: Date.now() }
-}
-
-// What a capability calls its devices, for the header ("📱 Phone online", "🖥️ Ubuntu PC online").
-const DOMAIN_ICON = { android: '📱', ubuntu_control: '🖥️' }
-
-const DEVICE_NAME = { tab: 'tablet', tablet: 'tablet', pc: 'PC' }
-const deviceName = (d) => DEVICE_NAME[d] || d || 'phone'
-const SOURCE_LABEL = { android: 'Phone', ubuntu_control: 'PC' }
-const cardLabel = (m) => (m.device ? deviceName(m.device).replace(/^./, c => c.toUpperCase())
-  : SOURCE_LABEL[m.source] || (m.source ? m.source.replace(/^./, c => c.toUpperCase()) : 'Nandi'))
-
-// ── Live clock hook ───────────────────────────────────────
-function useClock() {
-  const [now, setNow] = useState(new Date())
-  useEffect(() => {
-    const id = setInterval(() => setNow(new Date()), 1000)
-    return () => clearInterval(id)
-  }, [])
-
-  const time = now.toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: true,
-  })
-
-  const date = now.toLocaleDateString('en-US', {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  })
-
-  return { time, date }
-}
-
-export default function ChatView({ deviceId, onLogout }) {
+/**
+ * The main screen. A voice column on the left (the dotted core, captions and a
+ * compact bar) and, once Nandi shows anything, a stack of cards on the right.
+ * A folded console runs along the bottom. This component owns the conversation
+ * (the chat socket, the brain's display channel) and decides what goes where.
+ */
+export default function ChatView({ onLogout }) {
+  // ── Conversation ───────────────────────────────────────
   const [messages, setMessages] = useState([])
   const [connected, setConnected] = useState(false)
   // What each capability has connected now ({android: [{id, name, ...}]}), from the brain.
   const [capDevices, setCapDevices] = useState({})
+
+  // ── Settings ───────────────────────────────────────────
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [logsOpen, setLogsOpen] = useState(false)
-  const [visionOpen, setVisionOpen] = useState(false)
-  const [orbAmplitude, setOrbAmplitude] = useState(0)
-  // Voice mode: a live conversation through the audio server. Its audio
-  // levels go to the Orb through a ref (many updates a second, no re-render).
+  const [ttsEnabled, setTtsEnabled] = useState(() => localStorage.getItem('nandi_tts_enabled') !== 'false')
+  const [showLogs, setShowLogs] = useState(() => localStorage.getItem('nandi_show_logs') !== 'false')
+  const [theme, setThemeState] = useState(loadTheme)
+  const [scheme, setSchemeState] = useState(loadScheme)
+
+  // ── Screen ─────────────────────────────────────────────
+  // Prompt and answer cards the user dismissed (or that finished). They stay in
+  // the transcript; only their card goes.
+  const [hidden, setHidden] = useState(() => new Set())
+  const [consoleOpen, setConsoleOpen] = useState(false)
+  const [consoleTab, setConsoleTab] = useState('transcript')
+  const [tasksVersion, setTasksVersion] = useState(0)   // bumped by tasks_changed: the Tasks tab reloads
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [ambient, setAmbient] = useState(false)
+  const [toasts, setToasts] = useState([])
+  const [caption, setCaption] = useState(null)
+  const [isDragging, setIsDragging] = useState(false)
+  // Each vision panel's picture shape (width / height), once its media loads.
+  const [aspects, setAspects] = useState({})
+
+  // ── Voice ──────────────────────────────────────────────
+  const [speaking, setSpeaking] = useState(false)
+  const [recording, setRecording] = useState(false)
+  // Mic / voice level for the core. A ref: it changes 60 times a second.
+  const amplitudeRef = useRef(0)
+  // Voice mode: a live conversation through the audio server. While it is
+  // open its state drives the core and its lines the captions.
   const [voiceOpen, setVoiceOpen] = useState(false)
-  const voiceLevelRef = useRef(0)
+  const [voiceState, setVoiceState] = useState('idle')
+  // ── Live audio ─────────────────────────────────────────
   const [streamsOpen, setStreamsOpen] = useState(false)
   // This device's mic, broadcast to the audio server. Owned here so it keeps
-  // running when the streams panel closes.
+  // running when the live audio panel closes.
   const [micShare, setMicShare] = useState({ on: false, busy: false, error: '' })
   const micShareRef = useRef(null)
-  const [ttsEnabled, setTtsEnabled] = useState(() => {
-    return localStorage.getItem('nandi_tts_enabled') !== 'false'
-  })
-  // Owned here rather than inside SettingsPanel, which is unmounted whenever
-  // the panel is closed — state that has to outlive the panel cannot live in
-  // it. This is what makes the "Show activity logs" toggle do something.
-  const [showLogs, setShowLogs] = useState(() => {
-    return localStorage.getItem('nandi_show_logs') !== 'false'
-  })
+
+  const vision = useVisionBoxes()
+  const chatInputRef = useRef(null)
+  const stackRef = useRef(null)
+  // Kept just under the core by Core itself, wherever the core moves.
+  const hintRef = useRef(null)
+  const stripRef = useRef(null)
+  const coreAnchors = useMemo(() => [hintRef, stripRef], [])
+  const dragCountRef = useRef(0)
+  const lastEscRef = useRef(0)
 
   // onMessage is registered once, so it closes over the first render's
   // `ttsEnabled`. A ref keeps the callback reading today's value.
   const ttsEnabledRef = useRef(ttsEnabled)
   useEffect(() => { ttsEnabledRef.current = ttsEnabled }, [ttsEnabled])
-  // Same for voice mode: while it is open Nandi already speaks every reply
-  // she gives there, and a chat reply read out on top would talk over her.
-  const voiceOpenRef = useRef(voiceOpen)
+  const recordingRef = useRef(false)
+  useEffect(() => { recordingRef.current = recording }, [recording])
+  // While voice mode is open Nandi already speaks every reply she gives there,
+  // and a chat reply read out on top would talk over her.
+  const voiceOpenRef = useRef(false)
   useEffect(() => { voiceOpenRef.current = voiceOpen }, [voiceOpen])
 
-  // One timeout per outstanding request: requestId → timeout id. A single
-  // shared timer was cleared by ANY reply, so the answer to one message also
-  // cancelled the timeout of every other message still waiting.
-  //
-  // An entry exists exactly while its "Thinking…" placeholder does, and the
-  // map keeps send order, so its last key is the newest placeholder waiting.
+  const toast = useCallback((title, body = '', tone, action) => {
+    setToasts(prev => [...prev.slice(-3), { id: `${Date.now()}-${Math.random()}`, title, body, tone, action }])
+  }, [])
+  const dismissToast = useCallback((id) => setToasts(prev => prev.filter(t => t.id !== id)), [])
+
+  // ── Reply timeouts ─────────────────────────────────────
+  // One timeout per outstanding request: requestId → timeout id. The map keeps
+  // send order, so its last key is the newest placeholder still waiting.
   const replyTimersRef = useRef(new Map())
 
   const clearReplyTimer = useCallback((requestId) => {
@@ -228,6 +198,7 @@ export default function ChatView({ deviceId, onLogout }) {
       next[i] = { role: 'ai', text: reason, ts: Date.now(), isError: true }
       return next
     })
+    setCaption(c => ({ key: Date.now(), echo: c?.echo, text: reason, short: true, isError: true }))
   }, [])
 
   // (Re)starts a request's timeout. Map.set on an existing key keeps its
@@ -241,21 +212,24 @@ export default function ChatView({ deviceId, onLogout }) {
     }, REPLY_TIMEOUT_MS))
   }, [failPending])
 
-  const messagesAreaRef = useRef(null)
-  const chatInputRef = useRef(null)
-  const visionMgrRef = useRef(null)
-  const dragCountRef = useRef(0)
-  const [isDragging, setIsDragging] = useState(false)
+  useEffect(() => clearAllReplyTimers, [clearAllReplyTimers])
 
-  const { time, date } = useClock()
+  // ── Speaking ───────────────────────────────────────────
+  const say = useCallback((text) => {
+    setSpeaking(true)
+    speak(
+      text,
+      (vol) => { amplitudeRef.current = Math.min(1, vol * 4) },
+      () => { amplitudeRef.current = 0; setSpeaking(false) },
+    )
+  }, [])
 
-  // ── WebSocket setup ────────────────────────────────────
+  // ── Chat socket ────────────────────────────────────────
   useEffect(() => {
     onConnectionChange((val) => setConnected(val))
 
-    // An expired or invalid token used to produce an endless reconnect loop,
-    // with the UI stuck on "Offline" and no explanation. Send the user back to
-    // login instead.
+    // An expired or invalid token used to produce an endless reconnect loop.
+    // Send the user back to login instead.
     onAuthFailure(() => {
       localStorage.removeItem('user_token')
       onLogout()
@@ -266,13 +240,12 @@ export default function ChatView({ deviceId, onLogout }) {
 
       // The request this frame is about. Current servers quote request_id
       // back. Older ones send none, so their frame goes to the newest
-      // placeholder still waiting — the last "Thinking…" bubble, as before.
-      // A frame that does name a request is never redirected to another one.
+      // placeholder still waiting. A frame that names a request is never
+      // redirected to another one.
       const requestId = data.request_id || [...timers.keys()].pop()
 
       // Progress: the server is still on it. Show what it is doing and restart
-      // that request's timeout, since it is evidently alive. Nothing else
-      // changes — the placeholder keeps waiting for its answer.
+      // that request's timeout.
       if (data.type === 'progress') {
         if (!timers.has(requestId)) return   // answered, timed out or cleared
         armReplyTimer(requestId)
@@ -289,26 +262,29 @@ export default function ChatView({ deviceId, onLogout }) {
       // Any other typed frame is not an answer. Untyped ones come from older
       // servers, and are an answer only if they carry a response or an error.
       if (data.type && data.type !== 'response') return
-      const text = asText(data.response_text)
+      // A reply may open with an emotion tag ("[calm] ") meant for the speech
+      // voice. It is never shown; speak() turns it into the voice's emotion.
+      const spoken = asText(data.response_text)
+      const text = stripEmotionTag(spoken)
       if (!data.type && !text && !data.error) return
 
-      // The server answered, so the placeholder is no longer stranded.
       clearReplyTimer(requestId)
 
       const errors = Array.isArray(data.errors) ? data.errors.map(toProblem) : []
-      // An error frame has no response text. The placeholder used to stay on
-      // screen as a permanent "Thinking…" because only a successful reply
-      // replaced it.
+      const replyText = text || asText(data.error) ||
+        (errors.length ? 'Something went wrong — details below.' : 'The server sent an empty reply.')
+      const panel = needsPanel(replyText, errors)
       const reply = {
         role: 'ai',
-        text: text || asText(data.error) ||
-          (errors.length ? 'Something went wrong — details below.' : 'The server sent an empty reply.'),
+        id: `answer-${requestId || Date.now()}`,
+        text: replyText,
         ts: Date.now(),
         isError: data.status === 'error' || (!text && !!data.error),
         // Rendered as markdown even when it is an error; the client's own
         // notices (timeout, offline) are not.
         fromServer: true,
         errors,
+        panel,
       }
 
       setMessages(prev => {
@@ -318,18 +294,16 @@ export default function ChatView({ deviceId, onLogout }) {
         next[i] = reply
         return next
       })
+      setCaption(c => ({
+        key: Date.now(), echo: c?.echo, isError: reply.isError,
+        text: panel ? firstSentence(replyText) : replyText, short: panel,
+      }))
 
-      if (text && ttsEnabledRef.current && !voiceOpenRef.current) {
-        speak(
-          text,
-          (vol) => setOrbAmplitude(vol * 4),
-          () => setOrbAmplitude(0)
-        )
-      }
+      if (text && ttsEnabledRef.current && !voiceOpenRef.current) say(spoken)
     })
 
     ensureConnection()
-  }, [onLogout, armReplyTimer, clearReplyTimer])
+  }, [onLogout, armReplyTimer, clearReplyTimer, say])
 
   // ── Cards, live jobs, devices and events (brain display channel) ─────
   useEffect(() => onUiFrame((f) => {
@@ -375,12 +349,47 @@ export default function ChatView({ deviceId, onLogout }) {
           setMessages(prev => prev.map(m => (m.role === 'activity' && m.id === f.id ? { ...m, stopping: false } : m)))
         }
         break
-      case 'event':
-        setMessages(prev => insertCard(prev, eventMessage(f)))
+      case 'notification':
+      case 'notifications': {
+        // One pushed live, or the unread ones that arrived while this screen
+        // was away (sent on connect). Shown here, so marked read.
+        const items = (f.action === 'notification' ? [f.notification] : (Array.isArray(f.items) ? f.items : []))
+          .filter(n => n && typeof n === 'object')
+        if (!items.length) break
+        const notes = items.map(notificationMessage).reverse()
+        setMessages(prev => notes.reduce((list, n) => (list.some(m => m.id === n.id) ? list : insertCard(list, n)), prev))
+        const alert = notes.some(n => n.level === 'error')
+        playChime(alert ? 'alert' : 'info')
+        if (notes.length === 1) toast(notes[0].title, firstSentence(notes[0].body, 160), notes[0].level === 'error' ? 'alert' : undefined)
+        else toast(`${notes.length} notifications`, 'arrived while this screen was away')
+        // With voice on, a live reminder is also read out after the chime,
+        // unless Nandi is already speaking (a backlog is not read out).
+        if (f.action === 'notification' && ttsEnabledRef.current && !getIsPlaying() && !voiceOpenRef.current) {
+          const spoken = firstSentence(notes[0].body || notes[0].title, 240)
+          if (spoken) setTimeout(() => say(spoken), 900)
+        }
+        markNotificationsRead(notes.map(n => n.notificationId).filter(Boolean)).catch(() => {})
         break
+      }
+      case 'tasks_changed': {
+        // A task was created, changed or ran. The Tasks tab follows; a new one
+        // is confirmed here so the user sees what was set up and when it runs.
+        setTasksVersion(v => v + 1)
+        if (f.change === 'created' && f.task) {
+          toast(`Scheduled · ${f.task.title}`, `${scheduleText(f.task)} · ${waitingText(f.task)}`, undefined,
+            { label: 'View tasks', onSelect: () => { setConsoleTab('tasks'); setConsoleOpen(true) } })
+        }
+        break
+      }
+      case 'event': {
+        const ev = eventMessage(f)
+        setMessages(prev => insertCard(prev, ev))
+        toast(`${cardLabel(ev)} · ${ev.title}`, ev.text === ev.title ? '' : ev.text.slice(ev.title.length + 3))
+        break
+      }
       default:
     }
-  }), [armReplyTimer])
+  }), [armReplyTimer, toast])
 
   const handlePromptAnswer = useCallback((id, action, content) => {
     const sent = sendDisplay({ type: 'prompt_answer', id, action, content: content || {} })
@@ -392,78 +401,11 @@ export default function ChatView({ deviceId, onLogout }) {
     setMessages(prev => prev.map(m => (m.role === 'activity' && m.id === item.id ? { ...m, stopping: true } : m)))
   }, [])
 
-  // Don't leave timers running past unmount.
-  useEffect(() => clearAllReplyTimers, [clearAllReplyTimers])
-
-  // ── Keyboard shortcuts ──────────────────────────────────
-  useEffect(() => {
-    const handler = (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
-        e.preventDefault()
-        chatInputRef.current?.focus()
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
-        e.preventDefault()
-        setMessages([])
-        // Their placeholders are gone, so their timeouts go too.
-        clearAllReplyTimers()
-      }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [clearAllReplyTimers])
-
-  // ── Auto-scroll ────────────────────────────────────────
-  // Scrolls the container directly rather than calling scrollIntoView on a
-  // sentinel div. scrollIntoView walks up to whichever ancestor it decides is
-  // scrollable and, with `behavior: 'smooth'`, its animation is cancelled by the
-  // next React render — which for a streaming-ish chat is almost immediately.
-  // The net effect was that the view never moved and replies stayed below the
-  // fold.
-  //
-  // It also respects where the user is: if they have scrolled up to read
-  // history, new messages must not yank them back down.
-  //
-  // Whether the user has deliberately scrolled up is tracked by a
-  // real scroll event, NOT inferred from geometry at render time: a container
-  // measured while it has no usable height (first paint, hidden tab, a panel
-  // mid-transition) reports a huge distance-from-bottom, which reads as "the
-  // user scrolled away" and stops the chat following forever — with no way back
-  // except scrolling to the bottom by hand.
-  const userScrolledUpRef = useRef(false)
-
-  useEffect(() => {
-    const area = messagesAreaRef.current
-    if (!area) return
-
-    const onScroll = () => {
-      const distance = area.scrollHeight - area.clientHeight - area.scrollTop
-      userScrolledUpRef.current = distance > FOLLOW_THRESHOLD_PX
-    }
-    area.addEventListener('scroll', onScroll, { passive: true })
-    return () => area.removeEventListener('scroll', onScroll)
-  }, [])
-
-  useEffect(() => {
-    const area = messagesAreaRef.current
-    if (!area || userScrolledUpRef.current) return
-
-    // rAF so the new message is laid out before we scroll to it.
-    const id = requestAnimationFrame(() => {
-      area.scrollTo({
-        top: area.scrollHeight,
-        behavior: prefersReducedMotion() ? 'auto' : 'smooth',
-      })
-    })
-    return () => cancelAnimationFrame(id)
-  }, [messages])
-
-  // ── Send handler ───────────────────────────────────────
+  // ── Sending ────────────────────────────────────────────
   const handleSend = useCallback((text, attachments) => {
     if (!text && attachments.length === 0) return
-
-    // Sending is an explicit signal the user wants to see what comes back.
-    userScrolledUpRef.current = false
+    stopTts()
+    setAmbient(false)
 
     // Sent first, because the placeholder needs the request id that the
     // server's progress frames and answer will quote back.
@@ -471,14 +413,11 @@ export default function ChatView({ deviceId, onLogout }) {
 
     setMessages(prev => [
       ...prev,
-      {
-        role: 'user',
-        text: text || '(file attachment)',
-        ts: Date.now(),
-        attachments: attachments.length > 0 ? attachments : undefined,
-      },
+      { role: 'user', text: text || '(file attachment)', ts: Date.now(),
+        attachments: attachments.length > 0 ? attachments : undefined },
       { role: 'ai', text: '', thinking: true, requestId, progress: '', ts: Date.now() },
     ])
+    setCaption({ key: Date.now(), echo: text || 'Sent a file', text: '', short: true })
 
     if (status === 'offline') {
       // Nothing is going to reconnect by itself, so say so now rather than
@@ -486,78 +425,75 @@ export default function ChatView({ deviceId, onLogout }) {
       failPending(requestId, 'Not connected — your message was not sent. Sign in again and retry.')
       return
     }
-
     armReplyTimer(requestId)
   }, [armReplyTimer, failPending])
 
-  // ── Vision capture → attach to chat (mimics file upload flow) ──
-  const handleVisionCapture = useCallback((file, label) => {
-    // Reuse the existing global drop-files event that Attachment listens for.
-    // This pushes the captured frame through the normal upload pipeline,
-    // so it appears as an attachment chip above the input bar exactly like
-    // a dragged file would.
-    window.dispatchEvent(new CustomEvent('nandi-drop-files', {
-      detail: [file],
-    }))
-    // Focus chat so user can immediately type a question about it
+  const clearConversation = useCallback(() => {
+    setMessages([])
+    setCaption(null)
+    clearAllReplyTimers()
+  }, [clearAllReplyTimers])
+
+  // A frame from a vision panel goes through the normal upload pipeline, so it
+  // appears as an attachment chip above the bar exactly like a dropped file.
+  const handleVisionCapture = useCallback((file) => {
+    window.dispatchEvent(new CustomEvent('nandi-drop-files', { detail: [file] }))
     setTimeout(() => chatInputRef.current?.focus(), 50)
   }, [])
 
-  // The server pushed a frame or stream to this device. On narrow screens the
-  // vision column is a hidden drawer, so open it — otherwise the answer's
-  // picture would arrive somewhere the user cannot see.
-  const handleVisionActivity = useCallback(() => setVisionOpen(true), [])
+  const handleMicVolume = useCallback((vol) => { amplitudeRef.current = Math.min(1, vol * 5) }, [])
 
-  // ── Mic volume → orb ──────────────────────────────────
-  const handleMicVolume = useCallback((vol) => {
-    setOrbAmplitude(vol * 5)
-  }, [])
-
-  // ── Voice mode ────────────────────────────────────────
-  const handleVoiceOpen = useCallback(() => {
-    voiceOpenRef.current = true      // now, not after the next commit: no reply may start speaking in between
+  // ── Voice mode ─────────────────────────────────────────
+  const openVoice = useCallback(() => {
+    if (recordingRef.current) return      // dictation has the microphone
+    voiceOpenRef.current = true           // now, not after the next commit: no reply may start speaking in between
     stopTts()
-    setOrbAmplitude(0)
+    setAmbient(false)
+    amplitudeRef.current = 0
+    setVoiceState('connecting')
     setVoiceOpen(true)
   }, [])
 
-  const handleVoiceClose = useCallback(() => {
+  const closeVoice = useCallback(() => {
     voiceOpenRef.current = false
     setVoiceOpen(false)
-    voiceLevelRef.current = 0
+    setVoiceState('idle')
+    amplitudeRef.current = 0
   }, [])
 
-  const handleVoiceLevel = useCallback((amplitude) => {
-    voiceLevelRef.current = amplitude
+  const handleVoiceLevel = useCallback((amplitude) => { amplitudeRef.current = Math.min(1, amplitude) }, [])
+
+  // What was heard and what Nandi is saying, as subtitles.
+  const handleVoiceCaption = useCallback(({ user, bot }) => {
+    if (!user && !bot) return
+    setCaption({ key: Date.now(), echo: user, text: bot, short: true })
   }, [])
 
   // A finished voice exchange. It went through the audio server's own brain
-  // socket, so the chat socket never saw it — it is added to the history here.
+  // socket, so the chat socket never saw it — it is added to the transcript here.
   const handleVoiceTurn = useCallback(({ user, reply, status }) => {
     const ts = Date.now()
     const added = []
     if (user) added.push({ role: 'user', text: user, ts, voice: true })
     if (reply) {
-      added.push({ role: 'ai', text: reply, ts, voice: true, fromServer: true, isError: status === 'error' })
+      added.push({ role: 'ai', id: `voice-${ts}`, text: reply, ts, voice: true, fromServer: true,
+                   isError: status === 'error', errors: [], panel: false })
     }
-    if (!added.length) return
-    userScrolledUpRef.current = false
-    setMessages(prev => [...prev, ...added])
+    if (added.length) setMessages(prev => [...prev, ...added])
   }, [])
 
-  // ── Live audio streams ────────────────────────────────
-  const handleListenStream = useCallback((stream) => {
-    visionMgrRef.current?.openAudioStream(stream.id, stream.name ? `${stream.name} (live)` : stream.id)
-    setVisionOpen(true)
+  // ── Live audio streams ─────────────────────────────────
+  const listenToStream = useCallback((stream) => {
+    vision.openAudioStream(stream.id, stream.name ? `${stream.name} (live)` : stream.id)
     setStreamsOpen(false)
-  }, [])
+  }, [vision])
 
   const stopMicShare = useCallback(() => {
     micShareRef.current?.stop?.()
     micShareRef.current = null
   }, [])
 
-  const handleToggleMicShare = useCallback(async (next) => {
+  const toggleMicShare = useCallback(async (next) => {
     stopMicShare()
     if (!next) {
       setMicShare({ on: false, busy: false, error: '' })
@@ -604,68 +540,249 @@ export default function ChatView({ deviceId, onLogout }) {
   // A broadcast must not outlive the signed-in view.
   useEffect(() => stopMicShare, [stopMicShare])
 
-  // ── TTS toggle ─────────────────────────────────────────
-  // Shared by the speaker button and the Settings toggle so the two can never
-  // disagree about whether TTS is on.
+  // ── Settings ───────────────────────────────────────────
   const setTts = useCallback((next) => {
     localStorage.setItem('nandi_tts_enabled', next)
     if (!next) stopTts()
     setTtsEnabled(next)
   }, [])
 
-  const handleTtsToggle = useCallback(() => {
-    // Read through the ref, so this does not need `ttsEnabled` as a dependency
-    // and the state updater stays free of side effects.
-    setTts(!ttsEnabledRef.current)
-  }, [setTts])
-
   const handleShowLogsChange = useCallback((next) => {
     localStorage.setItem('nandi_show_logs', next)
     setShowLogs(next)
-    // Leaving the mobile drawer flagged open would make it reappear the moment
-    // logs were switched back on.
-    if (!next) setLogsOpen(false)
   }, [])
 
-  // ── Camera button → start/stop vision producer ─────────
-  const handleCameraClick = useCallback(() => {
-    const mgr = visionMgrRef.current
-    if (!mgr) return
-    if (mgr.isCameraOn()) {
-      mgr.stopCameraProducer()
-    } else {
-      mgr.startCameraProducer()
+  const setTheme = useCallback((key) => setThemeState(applyTheme(key)), [])
+  const setScheme = useCallback((key) => setSchemeState(applyScheme(key)), [])
+  const cycleTheme = useCallback(() => {
+    const keys = Object.keys(THEMES)
+    setThemeState(prev => applyTheme(keys[(keys.indexOf(prev) + 1) % keys.length]))
+  }, [])
+
+  // Camera failures used to be an inline notice in the vision column.
+  useEffect(() => {
+    if (!vision.cameraError) return
+    toast('Camera', vision.cameraError, 'alert')
+    vision.clearCameraError()
+  }, [vision.cameraError, vision.clearCameraError, toast])
+
+  // ── What is on screen ──────────────────────────────────
+  const setAspect = useCallback((id, ratio) => {
+    setAspects(prev => (Math.abs((prev[id] || 0) - ratio) < 0.01 ? prev : { ...prev, [id]: ratio }))
+  }, [])
+
+  // Newest first, as the card stack shows them.
+  const cards = useMemo(() => {
+    const list = vision.boxes.map(b => ({
+      id: b.id, at: b.at, title: b.label, source: visionSource(b),
+      aspect: NATURAL_HEIGHT.has(b.type) ? undefined : (aspects[b.id] || DEFAULT_ASPECT),
+      content: <VisionBox box={b} onCapture={handleVisionCapture} onAspect={(r) => setAspect(b.id, r)} />,
+    }))
+    const answers = messages.filter(m => m.role === 'ai' && m.panel).slice(-MAX_ANSWER_CARDS)
+    for (const m of messages) {
+      if (hidden.has(m.id)) continue
+      if (m.role === 'prompt') {
+        const open = isOpenPrompt(m)
+        list.push({
+          id: m.id, at: m.ts, alert: open, title: cardLabel(m), source: open ? 'needs your answer' : 'done',
+          content: <PromptCard msg={m} onAnswer={handlePromptAnswer} />,
+        })
+      } else if (m.role === 'notification' && (m.fileIds.length > 0 || needsPanel(m.body, []))) {
+        list.push({
+          id: m.id, at: m.ts, title: m.title, alert: m.level === 'error',
+          source: `${cardLabel(m).toLowerCase()} · ${new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+          content: <NotificationCard msg={m} />,
+        })
+      } else if (answers.includes(m)) {
+        list.push({
+          id: m.id, at: m.ts, title: 'Answer',
+          source: new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          content: (
+            <div className={`answer${m.isError ? ' msg__error-text' : ''}`}>
+              <Markdown>{m.text}</Markdown>
+              {m.errors?.length > 0 && <ProblemList errors={m.errors} />}
+            </div>
+          ),
+        })
+      }
+    }
+    return list.sort((a, b) => b.at - a.at)
+  }, [vision.boxes, aspects, messages, hidden, handleVisionCapture, handlePromptAnswer, setAspect])
+
+  // Answered prompts leave the screen after a moment (they stay in the transcript).
+  useEffect(() => {
+    const done = messages.filter(m => m.role === 'prompt' && !isOpenPrompt(m) && !hidden.has(m.id))
+    if (!done.length) return undefined
+    const t = setTimeout(() => setHidden(prev => new Set([...prev, ...done.map(m => m.id)])), DONE_PROMPT_MS)
+    return () => clearTimeout(t)
+  }, [messages, hidden])
+
+  const isVisionCard = useCallback((id) => vision.boxes.some(b => b.id === id), [vision.boxes])
+
+  const closeCard = useCallback((id) => {
+    if (isVisionCard(id)) vision.close(id)
+    else setHidden(prev => new Set(prev).add(id))
+  }, [isVisionCard, vision])
+
+  const clearStage = useCallback(() => {
+    vision.closeAll()
+    setHidden(prev => new Set([...prev, ...cards.map(c => c.id)]))
+  }, [vision, cards])
+
+  const hasCards = cards.length > 0
+
+  // Opening a stream that is already on screen brings its card to the front.
+  const openStream = useCallback((streamId, label) => {
+    const existing = vision.boxes.find(b => b.streamId === streamId && b.type !== 'audio_stream')
+    if (existing) stackRef.current?.goTo(existing.id)
+    else vision.openStream(streamId, label)
+  }, [vision])
+
+  // ── What Nandi is doing ────────────────────────────────
+  const pending = useMemo(() => [...messages].reverse().find(m => m.thinking), [messages])
+  const activities = useMemo(() => messages.filter(m => m.role === 'activity'), [messages])
+  const runningJob = useMemo(() => [...activities].reverse().find(a => a.state !== 'done'), [activities])
+  const promptOpen = messages.some(isOpenPrompt)
+  // In voice mode the conversation's own state drives the core (it does not
+  // need the chat socket), except that an open prompt still asks for attention
+  // while Nandi is only listening.
+  const voiceCore = voiceOpen ? VOICE_CORE[voiceState] : null
+  const coreState = voiceCore && !(voiceCore === 'listening' && promptOpen) ? voiceCore
+    : voiceOpen && promptOpen ? 'needs'
+    : !connected ? 'offline'
+    : recording ? 'listening'
+    : speaking ? 'speaking'
+    : promptOpen ? 'needs'
+    : runningJob ? 'working'
+    : pending ? 'thinking'
+    : 'idle'
+
+  const stopAllJobs = useCallback(() => {
+    activities.filter(a => a.state !== 'done' && a.can_stop).forEach(handleStopTask)
+  }, [activities, handleStopTask])
+
+  // ── Commands (menu and palette) ────────────────────────
+  const openConsole = useCallback((tab) => { setConsoleTab(tab); setConsoleOpen(true) }, [])
+  // Dictation; not during voice mode, which already has the microphone.
+  const toggleMic = useCallback(() => {
+    if (!voiceOpenRef.current) chatInputRef.current?.toggleMic()
+  }, [])
+  const openStreams = useCallback(() => setStreamsOpen(true), [])
+
+  const menuItems = [
+    { label: 'Settings', onSelect: () => setSettingsOpen(true) },
+    { label: consoleOpen ? 'Close console' : 'Open console', hint: 'Ctrl `', onSelect: () => setConsoleOpen(o => !o) },
+    { label: 'Files', onSelect: () => openConsole('files') },
+    { label: 'Scheduled tasks', onSelect: () => openConsole('tasks') },
+    { label: voiceOpen ? 'End voice mode' : 'Voice mode', onSelect: voiceOpen ? closeVoice : openVoice },
+    { label: 'Live audio', onSelect: openStreams },
+    { label: vision.cameraOn ? 'Stop sharing camera' : 'Share camera', onSelect: vision.toggleCamera },
+    { label: ttsEnabled ? 'Captions only' : 'Turn voice on', onSelect: () => setTts(!ttsEnabled) },
+    null,
+    { label: 'Clear the screen', hint: 'Esc Esc', onSelect: clearStage },
+    { label: 'Ambient mode', onSelect: () => setAmbient(true) },
+    { label: 'All commands', hint: 'Ctrl K', onSelect: () => setPaletteOpen(true) },
+  ]
+
+  const commands = [
+    { label: 'Ask Nandi', hint: '/', onSelect: () => chatInputRef.current?.focus() },
+    { label: 'Talk', hint: 'hold Space', onSelect: toggleMic },
+    { label: voiceOpen ? 'End voice mode' : 'Voice mode: a live conversation', onSelect: voiceOpen ? closeVoice : openVoice },
+    { label: 'Open live audio streams', onSelect: openStreams },
+    { label: micShare.on ? 'Stop sharing this microphone' : 'Share this microphone', onSelect: () => toggleMicShare(!micShare.on) },
+    { label: 'Open settings', onSelect: () => setSettingsOpen(true) },
+    { label: 'Open transcript', hint: 'console', onSelect: () => openConsole('transcript') },
+    { label: 'Open logs', hint: 'console', onSelect: () => openConsole('logs') },
+    { label: 'Open activity', hint: 'console', onSelect: () => openConsole('activity') },
+    { label: 'Open devices', hint: 'console', onSelect: () => openConsole('devices') },
+    { label: 'Open files', hint: 'console', onSelect: () => openConsole('files') },
+    { label: 'Open scheduled tasks', hint: 'console', onSelect: () => openConsole('tasks') },
+    { label: consoleOpen ? 'Close console' : 'Open console', hint: 'Ctrl `', onSelect: () => setConsoleOpen(o => !o) },
+    { label: vision.cameraOn ? 'Stop sharing camera' : 'Share camera', onSelect: vision.toggleCamera },
+    { label: ttsEnabled ? 'Captions only' : 'Turn voice on', onSelect: () => setTts(!ttsEnabled) },
+    { label: 'Clear the screen', hint: 'Esc Esc', onSelect: clearStage },
+    { label: 'Clear the conversation', hint: 'Ctrl L', onSelect: clearConversation },
+    { label: 'Stop what is running', hint: 'Shift Esc', onSelect: stopAllJobs },
+    { label: 'Ambient mode', onSelect: () => setAmbient(true) },
+    { label: 'Show all cards', hint: 'O', onSelect: () => stackRef.current?.toggleOverview(true) },
+    ...Object.entries(SCHEMES).map(([key, label]) => ({
+      label: `Appearance: ${label}${key === scheme ? ' (current)' : ''}`, hint: 'look', onSelect: () => setScheme(key),
+    })),
+    ...Object.entries(THEMES).map(([key, t]) => ({
+      label: `Accent: ${t.name}${key === theme ? ' (current)' : ''}`, hint: 'T', onSelect: () => setTheme(key),
+    })),
+    { label: 'Sign out', onSelect: onLogout },
+  ]
+
+  // ── Keyboard ───────────────────────────────────────────
+  // Read through a ref so the listener is attached once.
+  const keysRef = useRef(null)
+  keysRef.current = { ambient, paletteOpen, settingsOpen, speaking, clearStage, stopAllJobs, cycleTheme, clearConversation, toggleMic }
+
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      const k = keysRef.current
+      const mod = e.ctrlKey || e.metaKey
+      if (k.ambient) { if (!['Shift', 'Control', 'Meta', 'Alt'].includes(e.key)) setAmbient(false); return }
+      if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); setPaletteOpen(o => !o); return }
+      if (mod && e.key.toLowerCase() === 'l') { e.preventDefault(); k.clearConversation(); return }
+      if (mod && (e.key === '`' || e.code === 'Backquote')) { e.preventDefault(); setConsoleOpen(o => !o); return }
+      if (k.paletteOpen || k.settingsOpen) return
+
+      if (e.key === 'Escape') {
+        if (e.shiftKey) { k.stopAllJobs(); return }
+        if (k.speaking) { stopTts(); return }
+        const now = performance.now()
+        if (now - lastEscRef.current < DOUBLE_ESC_MS) { k.clearStage(); lastEscRef.current = 0; return }
+        lastEscRef.current = now
+        const stack = stackRef.current
+        if (stack?.overview) stack.toggleOverview(false)
+        else stack?.closeFront()
+        return
+      }
+      if (isTyping(document.activeElement) || mod || e.altKey) return
+      if (e.key === '/') { e.preventDefault(); chatInputRef.current?.focus(); return }
+      if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); stackRef.current?.step(1); return }
+      if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); stackRef.current?.step(-1); return }
+      if (e.key === 'o' || e.key === 'O') { stackRef.current?.toggleOverview(); return }
+      if (e.key === 't' || e.key === 'T') { k.cycleTheme(); return }
+      if (e.code === 'Space' && !e.repeat && document.activeElement?.tagName !== 'BUTTON') {
+        e.preventDefault()
+        if (!recordingRef.current) k.toggleMic()
+      }
+    }
+    // Hold Space to talk: letting go stops the recording and sends it.
+    const onKeyUp = (e) => {
+      if (e.code === 'Space' && recordingRef.current && !isTyping(document.activeElement)) {
+        e.preventDefault()
+        keysRef.current.toggleMic()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
     }
   }, [])
 
   // ── Global drag-and-drop ───────────────────────────────
   useEffect(() => {
-    const onDragEnter = (e) => {
-      e.preventDefault()
-      dragCountRef.current++
-      setIsDragging(true)
-    }
-    const onDragLeave = (e) => {
-      e.preventDefault()
-      if (--dragCountRef.current === 0) setIsDragging(false)
-    }
+    const onDragEnter = (e) => { e.preventDefault(); dragCountRef.current++; setIsDragging(true) }
+    const onDragLeave = (e) => { e.preventDefault(); if (--dragCountRef.current === 0) setIsDragging(false) }
     const onDragOver = (e) => e.preventDefault()
     const onDrop = (e) => {
       e.preventDefault()
       dragCountRef.current = 0
       setIsDragging(false)
       if (e.dataTransfer.files.length) {
-        window.dispatchEvent(new CustomEvent('nandi-drop-files', {
-          detail: e.dataTransfer.files,
-        }))
+        window.dispatchEvent(new CustomEvent('nandi-drop-files', { detail: e.dataTransfer.files }))
       }
     }
-
     document.addEventListener('dragenter', onDragEnter)
     document.addEventListener('dragleave', onDragLeave)
     document.addEventListener('dragover', onDragOver)
     document.addEventListener('drop', onDrop)
-
     return () => {
       document.removeEventListener('dragenter', onDragEnter)
       document.removeEventListener('dragleave', onDragLeave)
@@ -674,205 +791,57 @@ export default function ChatView({ deviceId, onLogout }) {
     }
   }, [])
 
+  const showHint = messages.length === 0 && !hasCards && coreState === 'idle' && !voiceOpen
+  const voiceBusy = voiceOpen && (voiceState === 'thinking' || voiceState === 'speaking')
+  const micNotice = micShare.on && !micShare.busy
+    ? { label: 'Mic shared', title: `This device's microphone is being shared as ${micStreamId()}`, onClick: openStreams }
+    : null
+
   return (
-    <div className={`app-layout${showLogs ? '' : ' app-layout--no-logs'}`}>
-      {/* ─── Header ─── */}
-      <header className="app-header">
-        <div className="app-header__left">
-          <img src="/logo.png" alt="Nandi AI" className="app-header__logo" />
-          <span className="app-header__brand">NANDI AI</span>
-          <span className="app-header__status">
-            <span className={`app-header__dot${connected ? '' : ' app-header__dot--off'}`} />
-            {connected ? 'Online' : 'Offline'}
-          </span>
-          {micShare.on && !micShare.busy && (
-            <button
-              className="app-header__mic-share"
-              onClick={() => setStreamsOpen(true)}
-              title={`This device's microphone is being shared as ${micStreamId()}`}
-            >
-              🎙 Mic shared
-            </button>
+    <div className={`screen${hasCards ? ' screen--cards' : ''}${ambient ? ' screen--ambient' : ''}`}
+      onPointerDownCapture={ambient ? () => setAmbient(false) : undefined}>
+      <TopBar coreState={coreState} menuItems={menuItems} scheme={scheme} onScheme={setScheme} notice={micNotice} />
+
+      <main className="screen__main">
+        <section className="voice" aria-label="Nandi">
+          <Core state={coreState} hasCards={hasCards} large={ambient}
+            amplitudeRef={amplitudeRef} anchorRefs={coreAnchors} onActivate={toggleMic} />
+          {showHint && (
+            <p className="voice__hint" ref={hintRef}>Click the core or hold <kbd>Space</kbd> to talk</p>
           )}
-          {Object.entries(capDevices).filter(([, list]) => list.length > 0).map(([domain, list]) => (
-            <span key={domain} className="app-header__phone app-header__phone--on"
-              title={list.map(d => `${d.id}${d.model ? ': ' + d.model : ''}${d.busy ? ' (busy)' : ''}`).join('\n')}>
-              {DOMAIN_ICON[domain] || '🔌'} {list.map(d => asText(d.name || d.id)).join(', ')} online
-            </span>
-          ))}
-        </div>
-
-        <div className="app-header__center">
-          <span className="app-header__time">{time}</span>
-          <span className="app-header__date">{date}</span>
-        </div>
-
-        {/* Each label is a separate element from its icon so it can be dropped
-            on phones, where the three labelled buttons need ~292px of a 375px
-            header and Settings ended up off-screen. title/aria-label carry the
-            meaning once the text is hidden. */}
-        <div className="app-header__right">
-          {showLogs && (
-            <button
-              className="app-header__toggle-logs"
-              onClick={() => setLogsOpen(prev => !prev)}
-              title="Activity logs"
-              aria-label="Activity logs"
-            >
-              <IconLogs size={15} />
-              <span className="app-header__btn-label">Logs</span>
-            </button>
-          )}
-          <button
-            className="app-header__toggle-logs"
-            onClick={() => setVisionOpen(prev => !prev)}
-            title="Vision"
-            aria-label="Vision"
-          >
-            <span aria-hidden="true">👁</span>
-            <span className="app-header__btn-label">Vision</span>
-          </button>
-          <button
-            className="app-header__settings-btn"
-            onClick={() => setSettingsOpen(true)}
-            title="Settings"
-            aria-label="Settings"
-          >
-            <IconSettings size={17} />
-            <span className="app-header__btn-label">Settings</span>
-          </button>
-        </div>
-      </header>
-
-      {/* ─── Log Sidebar (left) ─── */}
-      {/* Not rendered at all when the setting is off, so the log socket is
-          closed rather than merely hidden. */}
-      {showLogs && (
-        <aside className={`log-sidebar${logsOpen ? ' log-sidebar--open' : ''}`}>
-          <LogPanel />
-        </aside>
-      )}
-
-      {/* ─── Chat Area (center, ChatGPT-style width) ─── */}
-      <main className="chat-area">
-        <Orb amplitude={orbAmplitude} levelRef={voiceOpen ? voiceLevelRef : null} />
-
-        <div className="messages-area" ref={messagesAreaRef}>
-          <div className="messages-inner">
-            {messages.length === 0 && (
-              <div style={{
-                textAlign: 'center',
-                color: 'var(--text-muted)',
-                fontSize: '1rem',
-                padding: '40px 20px',
-                lineHeight: 1.7,
-              }}>
-                Hey! Type, talk, or drop files — Nandi is ready.
-                <br />
-                <span style={{ fontSize: '0.78rem', opacity: 0.6 }}>
-                  Ctrl+K to focus · Ctrl+L to clear
-                </span>
-              </div>
-            )}
-
-            {messages.map((msg, i) => (msg.role === 'prompt' || msg.role === 'activity' || msg.role === 'event') ? (
-              <div key={msg.id || i} className="msg msg--ai">
-                <span className="msg__label">{cardLabel(msg)}</span>
-                {msg.role === 'prompt' && <PromptCard msg={msg} onAnswer={handlePromptAnswer} />}
-                {msg.role === 'activity' && <ActivityCard item={msg} onStop={handleStopTask} />}
-                {msg.role === 'event' && <div className="phone-event">{msg.text}</div>}
-              </div>
-            ) : (
-              <div key={i} className={`msg msg--${msg.role}`}>
-                <span className="msg__label">
-                  {msg.role === 'user' ? 'You' : 'Nandi'}
-                  {msg.voice && <span className="msg__via" title="Said in voice mode"> · voice</span>}
-                </span>
-                <div className="msg__bubble">
-                  {msg.thinking ? (
-                    // What the server says it is doing, once it says anything.
-                    <span className={`msg__thinking${msg.progress ? ' msg__thinking--progress' : ''}`}>
-                      {msg.progress || 'Thinking…'}
-                    </span>
-                  ) : msg.isError && !msg.fromServer ? (
-                    // The client's own notices (timeout, offline): plain text.
-                    <span className="msg__error-text">{msg.text}</span>
-                  ) : msg.role === 'ai' ? (
-                    // Only the assistant's text is markdown. The user's own
-                    // message is shown exactly as typed.
-                    <>
-                      {/* A voice reply may open with an emotion tag ("[calm] ")
-                          for the speech voice; it is never shown. */}
-                      {msg.isError ? (
-                        <div className="msg__error-text"><Markdown>{stripEmotionTag(msg.text)}</Markdown></div>
-                      ) : (
-                        <Markdown>{stripEmotionTag(msg.text)}</Markdown>
-                      )}
-                      {msg.errors?.length > 0 && <ProblemList errors={msg.errors} />}
-                    </>
-                  ) : (
-                    msg.text
-                  )}
-                </div>
-                {msg.attachments && msg.attachments.length > 0 && (
-                  <div className="msg__attachments">
-                    {msg.attachments.map((att, j) => (
-                      <span key={j} className="msg__att-tag">
-                        📎 {att.filename}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                <span className="msg__meta">
-                  {new Date(msg.ts).toLocaleTimeString('en-US', {
-                    hour: 'numeric',
-                    minute: '2-digit',
-                    hour12: true,
-                  })}
-                </span>
-              </div>
-            ))}
+          <div className="voice__strip" ref={stripRef}>
+            <JobStrip job={runningJob} pending={pending ? pending.progress : null} onStop={handleStopTask} />
           </div>
-        </div>
-
-        <div className="chat-input-wrap">
-          <div className="chat-input-inner">
+          <Captions caption={caption} hold={!!pending || speaking || voiceBusy} />
+          <div className="voice__bar">
             {voiceOpen && (
-              <Suspense fallback={<div className="voice-mode voice-mode--connecting voice-mode--loading">Starting voice mode…</div>}>
-                <VoiceMode
-                  onTurn={handleVoiceTurn}
-                  onLevel={handleVoiceLevel}
-                  onClose={handleVoiceClose}
-                />
+              <Suspense fallback={<div className="voice-mode voice-mode--loading">Starting voice mode…</div>}>
+                <VoiceMode onTurn={handleVoiceTurn} onLevel={handleVoiceLevel} onState={setVoiceState}
+                  onCaption={handleVoiceCaption} onClose={closeVoice} />
               </Suspense>
             )}
             {/* Hidden rather than unmounted during voice mode, so a half-typed
                 message and its attachments are still there afterwards. */}
-            <div hidden={voiceOpen}>
-              <ChatInput
-                ref={chatInputRef}
-                onSend={handleSend}
-                onCameraOpen={handleCameraClick}
-                onMicVolume={handleMicVolume}
-                ttsActive={ttsEnabled}
-                onTtsToggle={handleTtsToggle}
-                onVoiceMode={handleVoiceOpen}
-              />
+            <div className="voice__input" hidden={voiceOpen}>
+              <ChatInput ref={chatInputRef} onSend={handleSend}
+                onMicVolume={handleMicVolume} onRecordingChange={setRecording} onVoiceMode={openVoice} />
             </div>
           </div>
-        </div>
+        </section>
+
+        <CardStack ref={stackRef} cards={cards} onClose={closeCard} onClear={clearStage} />
+        <Toasts toasts={toasts} onDismiss={dismissToast} />
+        {ambient && <AmbientClock />}
       </main>
 
-      {/* ─── Vision Column (right) ─── */}
-      <aside className={`vision-column${visionOpen ? ' vision-column--open' : ''}`}>
-        <VisionManager
-          ref={visionMgrRef}
-          onCaptureToChat={handleVisionCapture}
-          onActivity={handleVisionActivity}
-        />
-      </aside>
+      <Console
+        open={consoleOpen} onToggle={() => setConsoleOpen(o => !o)}
+        tab={consoleTab} onTab={setConsoleTab}
+        messages={messages} activities={activities} onStopActivity={handleStopTask}
+        showLogs={showLogs} connected={connected} capDevices={capDevices}
+        vision={{ ...vision, openStream }} tasksVersion={tasksVersion}
+      />
 
-      {/* ─── Settings ─── */}
       {settingsOpen && (
         <SettingsPanel
           onClose={() => setSettingsOpen(false)}
@@ -881,24 +850,28 @@ export default function ChatView({ deviceId, onLogout }) {
           onTtsChange={setTts}
           showLogs={showLogs}
           onShowLogsChange={handleShowLogsChange}
+          theme={theme}
+          onThemeChange={setTheme}
+          scheme={scheme}
+          onSchemeChange={setScheme}
           onOpenAudioStreams={() => { setSettingsOpen(false); setStreamsOpen(true) }}
         />
       )}
 
-      {/* ─── Live audio streams ─── */}
       {streamsOpen && (
         <AudioStreamsPanel
           onClose={() => setStreamsOpen(false)}
-          onListen={handleListenStream}
+          onListen={listenToStream}
           micShare={micShare}
-          onToggleMicShare={handleToggleMicShare}
+          onToggleMicShare={toggleMicShare}
         />
       )}
 
-      {/* ─── Drop overlay ─── */}
+      {paletteOpen && <CommandPalette commands={commands} onClose={() => setPaletteOpen(false)} />}
+
       {isDragging && (
         <div className="drop-overlay">
-          <span className="drop-overlay__label">📎 Drop files to attach</span>
+          <span className="drop-overlay__label">Drop files to attach</span>
         </div>
       )}
     </div>

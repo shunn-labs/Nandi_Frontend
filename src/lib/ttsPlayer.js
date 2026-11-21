@@ -8,7 +8,7 @@
 //  the first sentence instead of after the whole reply has been rendered —
 //  the old /api/tts returned one mp3 that had to arrive in full and be
 //  decoded first. The AnalyserNode every chunk passes through keeps feeding
-//  the Orb.
+//  the core's speaking animation.
 // ═══════════════════════════════════════════════════════════
 
 import { AUDIO_BASE } from './endpoints.js'
@@ -34,7 +34,7 @@ const TTS_MESSAGES = {
 let playback = null        // the current utterance (see speak)
 let isPlaying = false
 
-// ── Monitor output volume (feeds orb) ────────────────────
+// ── Monitor output volume (feeds the core) ───────────────
 
 function monitorPlaybackVolume(p) {
   if (playback !== p || !p.analyser) return
@@ -119,8 +119,9 @@ function finish(p) {
 /**
  * Speak `text` (markdown is fine — the server strips it; a leading emotion
  * tag is sent as the `emotion` field, never read out). Resolves when the
- * last chunk has been scheduled; `onEnd` runs once playback is over or has
- * failed, but not after stop().
+ * last chunk has been scheduled; `onEnd` runs exactly once: when playback is
+ * over, has failed, or was cut off by stop() (or by the next speak()), so a
+ * caller tracking "is Nandi speaking" hears about an interruption too.
  */
 export async function speak(text, onVolume, onEnd) {
   stop() // stop any current playback
@@ -239,8 +240,9 @@ export function stop() {
   }
   p.sources.clear()
   closeContext(p.ctx)
-  // Let the Orb settle instead of freezing on the last level it was given.
+  // Let the core settle instead of freezing on the last level it was given.
   p.onVolume?.(0)
+  p.onEnd?.()
 }
 
 export function getIsPlaying() {

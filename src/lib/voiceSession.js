@@ -11,7 +11,7 @@
 //    * connect with the brain JWT and this browser's client_id, so the brain
 //      treats a voice turn as coming from this device (display pushes land
 //      here, like for typed chat),
-//    * play the bot's audio track and measure both sides' levels for the Orb,
+//    * play the bot's audio track and measure both sides' levels for the core,
 //    * turn RTVI events into a small state machine for the UI:
 //        idle → connecting → listening ⇄ thinking ⇄ speaking, or error,
 //    * and hand every finished exchange (what the user said, what Nandi

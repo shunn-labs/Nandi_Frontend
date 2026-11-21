@@ -13,6 +13,8 @@ import {
   setVoiceDuplex,
   setVoiceLang,
 } from '../lib/voicePrefs.js'
+import { THEMES, SCHEMES } from '../lib/themes.js'
+import { isSoundEnabled, setSoundEnabled, playChime } from '../lib/chime.js'
 
 function getDeviceId() {
   const match = document.cookie.match(/(?:^|;\s*)nandi_device_id=([^;]+)/)
@@ -61,6 +63,9 @@ export function Toggle({ value, onChange, label }) {
  *
  * One owner per setting removes both.
  *
+ * `theme` (accent) and `scheme` (light / dark) are owned by ChatView too: the menu, the command palette and the T key
+ * change it as well.
+ *
  * `autoSend` stays local: ChatInput reads the key at the moment it needs it, so
  * there is no second copy to fall out of step. The voice settings (language,
  * barge-in, audio server) work the same way: they are read when a request or
@@ -73,6 +78,10 @@ export default function SettingsPanel({
   onTtsChange,
   showLogs,
   onShowLogsChange,
+  theme,
+  onThemeChange,
+  scheme,
+  onSchemeChange,
   onOpenAudioStreams,
 }) {
   const [autoSend, setAutoSend] = useState(() => {
@@ -108,6 +117,13 @@ export default function SettingsPanel({
     }
   }
 
+  const [chime, setChime] = useState(isSoundEnabled)
+  const onChimeChange = (next) => {
+    setSoundEnabled(next)
+    setChime(next)
+    if (next) playChime('info')          // the click unlocks audio, so this is heard
+  }
+
   return (
     <>
       <div className="settings-overlay" onClick={onClose} />
@@ -137,6 +153,10 @@ export default function SettingsPanel({
             <div className="settings-row">
               <span className="settings-row__label">Auto-send after speech</span>
               <Toggle value={autoSend} onChange={setAutoSend} />
+            </div>
+            <div className="settings-row">
+              <span className="settings-row__label">Notification sound</span>
+              <Toggle value={chime} onChange={onChimeChange} />
             </div>
             <div className="settings-row">
               <label className="settings-row__label" htmlFor="settings-voice-lang">Voice language</label>
@@ -195,6 +215,40 @@ export default function SettingsPanel({
                 <button className="settings-url__btn" onClick={onOpenAudioStreams}>Open</button>
               </div>
             )}
+          </div>
+
+          {/* Appearance */}
+          <div>
+            <div className="settings-section__label">Appearance</div>
+            <div className="scheme-picker" role="radiogroup" aria-label="Appearance">
+              {Object.entries(SCHEMES).map(([key, label]) => (
+                <button key={key} role="radio" aria-checked={scheme === key}
+                  className={`scheme-picker__option${scheme === key ? ' scheme-picker__option--on' : ''}`}
+                  onClick={() => onSchemeChange(key)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Accent */}
+          <div>
+            <div className="settings-section__label">Accent</div>
+            <div className="theme-picker" role="radiogroup" aria-label="Theme">
+              {Object.entries(THEMES).map(([key, t]) => (
+                <button
+                  key={key}
+                  role="radio"
+                  aria-checked={theme === key}
+                  className={`theme-picker__option${theme === key ? ' theme-picker__option--on' : ''}`}
+                  onClick={() => onThemeChange(key)}
+                >
+                  <i style={{ background: t.swatch }} />
+                  {t.name}
+                </button>
+              ))}
+            </div>
+            <p className="theme-picker__note">{THEMES[theme]?.note} Press T to cycle.</p>
           </div>
 
           {/* Interface */}

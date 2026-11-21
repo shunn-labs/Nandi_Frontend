@@ -44,7 +44,7 @@ export default function App() {
     disconnect()
     // The vision-control socket registered with the same token. Left open it
     // would keep receiving this account's frames after sign-out; the next
-    // login's VisionManager starts it afresh.
+    // login's vision hook (useVisionBoxes) starts it afresh.
     disconnectVisionControl()
     // Same token again: the phones' approvals must not keep arriving after sign-out.
     setIsLoggedIn(false)

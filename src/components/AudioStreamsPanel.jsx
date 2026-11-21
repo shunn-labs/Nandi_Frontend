@@ -17,13 +17,13 @@ function describe(s) {
  * this account can hear (ESP32 mics, other browsers, phones), and a switch to
  * publish this device's own.
  *
- * Listening opens a live tile in the vision column, the same tile the brain
+ * Listening opens a live audio card on the stage, the same card the brain
  * opens with show_audio_stream, so it keeps playing after this panel closes.
  * Sharing is owned by ChatView for the same reason.
  *
  * Props:
  *   onClose()
- *   onListen(stream)              open a live tile for {id, name}
+ *   onListen(stream)              open a live audio card for {id, name}
  *   micShare { on, busy, error }  this device's mic broadcast
  *   onToggleMicShare(next)
  */
@@ -107,7 +107,7 @@ export default function AudioStreamsPanel({ onClose, onListen, micShare, onToggl
                 <div key={s.id} className="settings-row streams-panel__row">
                   <span className="streams-panel__info">
                     <span className="streams-panel__name">
-                      <span className={`vbox__dot vbox__dot--${s.live ? 'live' : 'offline'}`} />
+                      <span className={`abox__dot abox__dot--${s.live ? 'live' : 'offline'}`} />
                       {s.name || s.id}
                       {mine && <span className="streams-panel__mine">this device</span>}
                     </span>
