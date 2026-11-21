@@ -7,6 +7,12 @@ import { getBaseUrl } from './wsAdapter.js'
 let currentAudio = null
 let isPlaying = false
 let volumeCallback = null
+// The current utterance's onEnd. stop() calls it too, so a caller tracking
+// "is Nandi speaking" hears about an interruption, not only a natural end.
+let endCallback = null
+// Bumped by every speak() and stop(). A fetch that finishes after the user
+// cut Nandi off sees a newer generation and stays silent.
+let generation = 0
 let audioContext = null
 let analyser = null
 let rafId = null
@@ -44,6 +50,8 @@ export async function speak(text, onVolume, onEnd) {
   stop() // stop any current playback
 
   volumeCallback = onVolume || null
+  endCallback = onEnd || null
+  const gen = ++generation
 
   const token = getToken()
   const baseUrl = getBaseUrl()
@@ -63,8 +71,10 @@ export async function speak(text, onVolume, onEnd) {
     const arrayBuffer = await res.arrayBuffer()
 
     // Use Web Audio API for playback + volume analysis
-    audioContext = new (window.AudioContext || window.webkitAudioContext)()
-    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
+    const ctx = new (window.AudioContext || window.webkitAudioContext)()
+    const audioBuffer = await ctx.decodeAudioData(arrayBuffer)
+    if (gen !== generation) { try { ctx.close() } catch {} ; return }
+    audioContext = ctx
 
     const source = audioContext.createBufferSource()
     source.buffer = audioBuffer
@@ -83,29 +93,40 @@ export async function speak(text, onVolume, onEnd) {
       isPlaying = false
       cancelAnimationFrame(rafId)
       volumeCallback = null
-      if (onEnd) onEnd()
+      finish()
     }
 
     currentAudio = { source, context: audioContext }
   } catch (err) {
     console.error('[tts] failed:', err)
     isPlaying = false
-    if (onEnd) onEnd()
+    finish()
   }
+}
+
+function finish() {
+  const cb = endCallback
+  endCallback = null
+  if (cb) cb()
 }
 
 // ── Stop playback ────────────────────────────────────────
 
 export function stop() {
+  generation++
   isPlaying = false
   cancelAnimationFrame(rafId)
   volumeCallback = null
 
   if (currentAudio) {
+    // Detach first, so the stopped source's onended doesn't run finish() for
+    // whatever is spoken next.
+    currentAudio.source.onended = null
     try { currentAudio.source.stop() } catch {}
     try { currentAudio.context.close() } catch {}
     currentAudio = null
   }
+  finish()
 }
 
 export function getIsPlaying() {
