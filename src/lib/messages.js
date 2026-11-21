@@ -9,6 +9,8 @@
 //   prompt    a capability needs your answer (approval or small form)
 //   activity  a job running somewhere (see ActivityCard.applyActivity)
 //   event     something that happened on a device (missed call, …)
+//   notification  Nandi telling you something on its own (a reminder, a
+//                 scheduled task's result), possibly with files
 
 // Server-supplied fields are coerced to strings before they reach JSX: an
 // object there would throw during render and blank the whole screen.
@@ -51,6 +53,19 @@ export function eventMessage(f) {
            device: asText(e.device), title, text: text ? `${title} — ${text}` : title, ts: Date.now() }
 }
 
+export function notificationMessage(n) {
+  const item = (n && typeof n === 'object') ? n : {}
+  const title = asText(item.title || 'Nandi')
+  const body = asText(item.body)
+  return {
+    role: 'notification', id: `nt-${asText(item.id) || Date.now()}`, notificationId: asText(item.id),
+    source: asText(item.source), level: asText(item.level) || 'info', title, body,
+    text: body ? `${title} — ${body}` : title,
+    fileIds: Array.isArray(item.file_ids) ? item.file_ids.map(asText) : [],
+    ts: Date.parse(item.created_at) || Date.now(),
+  }
+}
+
 /** A job's goal without the "On the phone:" prefix the brain adds to its title. */
 export function activityTitle(a) {
   return (a.title || 'Job').replace(/^On the (phone|tablet|pc):\s*/i, '')
@@ -80,7 +95,7 @@ export function activityLine(a) {
 export const isOpenPrompt = (m) => m.role === 'prompt' && ['open', 'sent', 'invalid'].includes(m.status)
 
 const DEVICE_NAME = { tab: 'Tablet', tablet: 'Tablet', pc: 'PC' }
-const SOURCE_LABEL = { android: 'Phone', ubuntu_control: 'PC' }
+const SOURCE_LABEL = { android: 'Phone', ubuntu_control: 'PC', scheduler: 'Scheduled', system: 'Nandi' }
 const capitalise = (s) => s.replace(/^./, c => c.toUpperCase())
 
 /** Who a card is from, for its label: "Phone", "PC", "Tablet", … */

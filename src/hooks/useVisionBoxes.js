@@ -31,8 +31,9 @@ function capFrames(boxes) {
  * device (show_frame / show_stream / close / close_all on the vision-control
  * socket), streams opened by id, and this device's own camera.
  *
- * A box: { id, type: 'frame' | 'stream' | 'camera', label, at, ...media }
- *   frame   imageB64, mime, camera   (a show_frame for a wid on screen updates it)
+ * A box: { id, type: 'frame' | 'stream' | 'camera' | 'file', label, at, ...media }
+ *   frame   imageB64, mime, camera, fileId   (a show_frame for a wid on screen updates it)
+ *   file    file {file_id, filename, mime, size, kind}, url (signed download link)
  *   stream  streamId                 (deduped by id)
  *   camera  streamId, producer
  */
@@ -54,11 +55,12 @@ export default function useVisionBoxes() {
     }, 1000)
 
     onVisionCommand((msg) => {
-      const { action, wid, label, stream_id, image_b64, mime, camera } = msg
+      const { action, wid, label, stream_id, image_b64, mime, camera, file_id } = msg
 
       if (action === 'show_frame') {
         // `camera`: which camera the frame was taken from, when the brain says.
-        const image = { imageB64: image_b64, mime: mime || 'image/jpeg', camera: camera || '' }
+        // `file_id`: where the brain keeps it (its file store), so it can be saved.
+        const image = { imageB64: image_b64, mime: mime || 'image/jpeg', camera: camera || '', fileId: file_id || '' }
         setBoxes(prev => {
           // The server re-sends a wid to refresh that box, so update it in place.
           const existing = wid ? prev.find(b => b.id === wid) : null
@@ -70,6 +72,13 @@ export default function useVisionBoxes() {
           const id = wid && !existing ? wid : nextBoxId()
           return capFrames([...prev, { id, type: 'frame', label: label || 'Frame', at: Date.now(), ...image }])
         })
+      } else if (action === 'show_file') {
+        // Any non-image file the brain shows here: a card to play or download it.
+        const file = msg.file && typeof msg.file === 'object' ? msg.file : {}
+        const id = wid || `file_${file.file_id || nextBoxId()}`
+        const box = { id, type: 'file', label: label || file.filename || 'File', file, url: msg.url || '', at: Date.now() }
+        setBoxes(prev => (prev.some(b => b.id === id) ? prev.map(b => (b.id === id ? { ...box, at: b.at } : b))
+          : [...prev, box]))
       } else if (action === 'show_stream') {
         const id = wid || `stream_${stream_id}`
         setBoxes(prev => (prev.some(b => b.id === id) ? prev

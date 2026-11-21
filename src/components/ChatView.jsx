@@ -13,6 +13,7 @@ import VisionBox from './VisionBox.jsx'
 import Markdown from './Markdown.jsx'
 import ProblemList from './ProblemList.jsx'
 import PromptCard from './PromptCard.jsx'
+import NotificationCard from './NotificationCard.jsx'
 import { applyActivity } from './ActivityCard.jsx'
 import useVisionBoxes from '../hooks/useVisionBoxes.js'
 import {
@@ -22,11 +23,14 @@ import {
   onMessage,
   sendMessage,
 } from '../lib/wsAdapter.js'
-import { speak, stop as stopTts } from '../lib/ttsPlayer.js'
+import { speak, stop as stopTts, getIsPlaying } from '../lib/ttsPlayer.js'
+import { playChime } from '../lib/chime.js'
 import { onUiFrame, sendDisplay } from '../lib/visionControl.js'
+import { markNotificationsRead } from '../lib/filesApi.js'
+import { scheduleText, waitingText } from '../lib/taskText.js'
 import { THEMES, SCHEMES, applyTheme, applyScheme, loadTheme, loadScheme } from '../lib/themes.js'
 import {
-  asText, toProblem, findPending, insertCard, promptMessage, eventMessage,
+  asText, toProblem, findPending, insertCard, promptMessage, eventMessage, notificationMessage,
   isOpenPrompt, cardLabel, needsPanel, firstSentence,
 } from '../lib/messages.js'
 
@@ -49,6 +53,7 @@ const DOUBLE_ESC_MS = 600
 // from (the stream id, or the camera a snapshot was taken from).
 function visionSource(b) {
   if (b.type === 'frame') return b.camera ? `snapshot · ${b.camera}` : 'snapshot'
+  if (b.type === 'file') return `file · ${b.file?.kind || 'document'}`
   return `${b.type === 'camera' ? 'this device' : 'live'} · ${b.streamId}`
 }
 // Shape of a vision card until its picture has loaded.
@@ -82,6 +87,7 @@ export default function ChatView({ onLogout }) {
   const [hidden, setHidden] = useState(() => new Set())
   const [consoleOpen, setConsoleOpen] = useState(false)
   const [consoleTab, setConsoleTab] = useState('transcript')
+  const [tasksVersion, setTasksVersion] = useState(0)   // bumped by tasks_changed: the Tasks tab reloads
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [ambient, setAmbient] = useState(false)
   const [toasts, setToasts] = useState([])
@@ -113,8 +119,8 @@ export default function ChatView({ onLogout }) {
   const recordingRef = useRef(false)
   useEffect(() => { recordingRef.current = recording }, [recording])
 
-  const toast = useCallback((title, body = '', tone) => {
-    setToasts(prev => [...prev.slice(-3), { id: `${Date.now()}-${Math.random()}`, title, body, tone }])
+  const toast = useCallback((title, body = '', tone, action) => {
+    setToasts(prev => [...prev.slice(-3), { id: `${Date.now()}-${Math.random()}`, title, body, tone, action }])
   }, [])
   const dismissToast = useCallback((id) => setToasts(prev => prev.filter(t => t.id !== id)), [])
 
@@ -293,6 +299,38 @@ export default function ChatView({ onLogout }) {
           setMessages(prev => prev.map(m => (m.role === 'activity' && m.id === f.id ? { ...m, stopping: false } : m)))
         }
         break
+      case 'notification':
+      case 'notifications': {
+        // One pushed live, or the unread ones that arrived while this screen
+        // was away (sent on connect). Shown here, so marked read.
+        const items = (f.action === 'notification' ? [f.notification] : (Array.isArray(f.items) ? f.items : []))
+          .filter(n => n && typeof n === 'object')
+        if (!items.length) break
+        const notes = items.map(notificationMessage).reverse()
+        setMessages(prev => notes.reduce((list, n) => (list.some(m => m.id === n.id) ? list : insertCard(list, n)), prev))
+        const alert = notes.some(n => n.level === 'error')
+        playChime(alert ? 'alert' : 'info')
+        if (notes.length === 1) toast(notes[0].title, firstSentence(notes[0].body, 160), notes[0].level === 'error' ? 'alert' : undefined)
+        else toast(`${notes.length} notifications`, 'arrived while this screen was away')
+        // With voice on, a live reminder is also read out after the chime,
+        // unless Nandi is already speaking (a backlog is not read out).
+        if (f.action === 'notification' && ttsEnabledRef.current && !getIsPlaying()) {
+          const spoken = firstSentence(notes[0].body || notes[0].title, 240)
+          if (spoken) setTimeout(() => say(spoken), 900)
+        }
+        markNotificationsRead(notes.map(n => n.notificationId).filter(Boolean)).catch(() => {})
+        break
+      }
+      case 'tasks_changed': {
+        // A task was created, changed or ran. The Tasks tab follows; a new one
+        // is confirmed here so the user sees what was set up and when it runs.
+        setTasksVersion(v => v + 1)
+        if (f.change === 'created' && f.task) {
+          toast(`Scheduled · ${f.task.title}`, `${scheduleText(f.task)} · ${waitingText(f.task)}`, undefined,
+            { label: 'View tasks', onSelect: () => { setConsoleTab('tasks'); setConsoleOpen(true) } })
+        }
+        break
+      }
       case 'event': {
         const ev = eventMessage(f)
         setMessages(prev => insertCard(prev, ev))
@@ -390,7 +428,7 @@ export default function ChatView({ onLogout }) {
   const cards = useMemo(() => {
     const list = vision.boxes.map(b => ({
       id: b.id, at: b.at, title: b.label, source: visionSource(b),
-      aspect: aspects[b.id] || DEFAULT_ASPECT,
+      aspect: b.type === 'file' ? undefined : (aspects[b.id] || DEFAULT_ASPECT),
       content: <VisionBox box={b} onCapture={handleVisionCapture} onAspect={(r) => setAspect(b.id, r)} />,
     }))
     const answers = messages.filter(m => m.role === 'ai' && m.panel).slice(-MAX_ANSWER_CARDS)
@@ -401,6 +439,12 @@ export default function ChatView({ onLogout }) {
         list.push({
           id: m.id, at: m.ts, alert: open, title: cardLabel(m), source: open ? 'needs your answer' : 'done',
           content: <PromptCard msg={m} onAnswer={handlePromptAnswer} />,
+        })
+      } else if (m.role === 'notification' && (m.fileIds.length > 0 || needsPanel(m.body, []))) {
+        list.push({
+          id: m.id, at: m.ts, title: m.title, alert: m.level === 'error',
+          source: `${cardLabel(m).toLowerCase()} · ${new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+          content: <NotificationCard msg={m} />,
         })
       } else if (answers.includes(m)) {
         list.push({
@@ -471,6 +515,8 @@ export default function ChatView({ onLogout }) {
   const menuItems = [
     { label: 'Settings', onSelect: () => setSettingsOpen(true) },
     { label: consoleOpen ? 'Close console' : 'Open console', hint: 'Ctrl `', onSelect: () => setConsoleOpen(o => !o) },
+    { label: 'Files', onSelect: () => openConsole('files') },
+    { label: 'Scheduled tasks', onSelect: () => openConsole('tasks') },
     { label: vision.cameraOn ? 'Stop sharing camera' : 'Share camera', onSelect: vision.toggleCamera },
     { label: ttsEnabled ? 'Captions only' : 'Turn voice on', onSelect: () => setTts(!ttsEnabled) },
     null,
@@ -487,6 +533,8 @@ export default function ChatView({ onLogout }) {
     { label: 'Open logs', hint: 'console', onSelect: () => openConsole('logs') },
     { label: 'Open activity', hint: 'console', onSelect: () => openConsole('activity') },
     { label: 'Open devices', hint: 'console', onSelect: () => openConsole('devices') },
+    { label: 'Open files', hint: 'console', onSelect: () => openConsole('files') },
+    { label: 'Open scheduled tasks', hint: 'console', onSelect: () => openConsole('tasks') },
     { label: consoleOpen ? 'Close console' : 'Open console', hint: 'Ctrl `', onSelect: () => setConsoleOpen(o => !o) },
     { label: vision.cameraOn ? 'Stop sharing camera' : 'Share camera', onSelect: vision.toggleCamera },
     { label: ttsEnabled ? 'Captions only' : 'Turn voice on', onSelect: () => setTts(!ttsEnabled) },
@@ -615,7 +663,7 @@ export default function ChatView({ onLogout }) {
         tab={consoleTab} onTab={setConsoleTab}
         messages={messages} activities={activities} onStopActivity={handleStopTask}
         showLogs={showLogs} connected={connected} capDevices={capDevices}
-        vision={{ ...vision, openStream }}
+        vision={{ ...vision, openStream }} tasksVersion={tasksVersion}
       />
 
       {settingsOpen && (

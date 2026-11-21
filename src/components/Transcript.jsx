@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react'
 import Markdown from './Markdown.jsx'
 import ProblemList from './ProblemList.jsx'
 import { cardLabel, activityLine } from '../lib/messages.js'
+import { downloadFile } from '../lib/filesApi.js'
 
 // Closer to the bottom than this counts as "following the conversation".
 const FOLLOW_THRESHOLD_PX = 80
@@ -20,7 +21,12 @@ function Line({ m }) {
         <b className="tr__who tr__who--user">You</b>
         <span className="tr__text tr__text--user">
           {m.text}
-          {m.attachments?.map((a, i) => <small key={i} className="tr__tag">📎 {a.filename}</small>)}
+          {m.attachments?.map((a, i) => (
+            <button key={i} type="button" className="tr__tag tr__tag--link" title="Download"
+              onClick={() => downloadFile(a.file_id, a.filename).catch(err => console.warn('[files] download failed', err))}>
+              📎 {a.filename}
+            </button>
+          ))}
         </span>
       </>
     )

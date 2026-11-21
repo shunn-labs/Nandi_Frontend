@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { startConsumer } from '../lib/webrtcConsumer.js'
+import { absoluteUrl, downloadFile, humanSize, SOURCE_LABEL } from '../lib/filesApi.js'
 
 /**
  * VisionBox — the picture inside a vision panel on the stage. The panel around
@@ -8,12 +9,14 @@ import { startConsumer } from '../lib/webrtcConsumer.js'
  * box.type === 'stream'  → WebRTC consumer with auto-reconnect + manual refresh
  * box.type === 'frame'   → static base64 image (box.mime, JPEG if unset)
  * box.type === 'camera'  → local producer preview (uses producer ref for switching)
+ * box.type === 'file'    → a file from Nandi's file store (FileBox: play or download)
  *
  * Buttons:
  *   📸 Capture  — grab current frame as a File and inject into the chat
  *                 attachment strip (same flow as uploading a file)
  *   🔄 Refresh  — re-connect the WebRTC consumer (stream only)
  *   ⤺  Switch  — flip front ↔ back camera (camera only)
+ *   ⤓  Save    — download the frame from Nandi's files (frames the brain stored)
  *   (Closing is the panel's job.)
  *
  * onAspect(width / height) reports the media's real shape once it is known
@@ -21,6 +24,39 @@ import { startConsumer } from '../lib/webrtcConsumer.js'
  * shape instead of letterboxing the picture.
  */
 export default function VisionBox({ box, onCapture, onAspect }) {
+  if (box.type === 'file') return <FileBox box={box} />
+  return <MediaBox box={box} onCapture={onCapture} onAspect={onAspect} />
+}
+
+/** A non-image file the brain showed: audio and video play in place, anything else downloads. */
+function FileBox({ box }) {
+  const f = box.file || {}
+  const [error, setError] = useState('')
+  const url = absoluteUrl(box.url)
+  const kind = f.kind || ''
+  const save = async () => {
+    setError('')
+    try { await downloadFile(f.file_id, f.filename) } catch (err) { setError(err.message) }
+  }
+  return (
+    <div className="fbox">
+      {kind === 'audio' && url && <audio className="fbox__player" controls preload="metadata" src={url} />}
+      {kind === 'video' && url && <video className="fbox__player" controls preload="metadata" playsInline src={url} />}
+      <div className="fbox__meta">
+        <b className="fbox__name" title={f.filename}>{f.filename || box.label}</b>
+        <span>{[kind || 'file', humanSize(f.size), SOURCE_LABEL[f.source] || f.source].filter(Boolean).join(' · ')}</span>
+        {f.caption && <span className="fbox__caption">{f.caption}</span>}
+      </div>
+      <div className="fbox__actions">
+        <button className="devices__btn" onClick={save} disabled={!f.file_id}>Download</button>
+        {url && <a className="devices__btn fbox__link" href={url} target="_blank" rel="noreferrer">Open</a>}
+      </div>
+      {error && <div className="cams__error">{error}</div>}
+    </div>
+  )
+}
+
+function MediaBox({ box, onCapture, onAspect }) {
   const videoRef = useRef(null)
   const consumerRef = useRef(null)
   const [state, setState] = useState(box.type === 'frame' ? 'live' : 'connecting')
@@ -134,6 +170,17 @@ export default function VisionBox({ box, onCapture, onAspect }) {
     }
   }
 
+  const [saveError, setSaveError] = useState('')
+  const handleSave = async () => {
+    setSaveError('')
+    try {
+      const ext = box.mime === 'image/png' ? 'png' : 'jpg'
+      await downloadFile(box.fileId, `${(box.label || 'frame').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40)}.${ext}`)
+    } catch (err) {
+      setSaveError(err.message)
+    }
+  }
+
   const reportAspect = (w, h) => {
     if (w > 0 && h > 0) onAspect?.(w / h)
   }
@@ -181,6 +228,11 @@ export default function VisionBox({ box, onCapture, onAspect }) {
         )}
         {box.type === 'stream' && (
           <button className="vbox__tool" title="Reconnect" onClick={handleRefresh}>Reconnect</button>
+        )}
+        {box.type === 'frame' && box.fileId && (
+          <button className="vbox__tool" title={saveError || 'Download this frame'} onClick={handleSave}>
+            {saveError ? 'Save failed' : 'Save'}
+          </button>
         )}
         <button className="vbox__tool" title="Attach this frame to your next message" onClick={handleCapture}>Attach</button>
       </div>

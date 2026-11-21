@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { API_BASE } from '../lib/endpoints.js'
 import { THEMES, SCHEMES } from '../lib/themes.js'
+import { isSoundEnabled, setSoundEnabled, playChime } from '../lib/chime.js'
 
 function getDeviceId() {
   const match = document.cookie.match(/(?:^|;\s*)nandi_device_id=([^;]+)/)
@@ -73,6 +74,13 @@ export default function SettingsPanel({
     localStorage.setItem('nandi_auto_send_stt', autoSend)
   }, [autoSend])
 
+  const [chime, setChime] = useState(isSoundEnabled)
+  const onChimeChange = (next) => {
+    setSoundEnabled(next)
+    setChime(next)
+    if (next) playChime('info')          // the click unlocks audio, so this is heard
+  }
+
   return (
     <>
       <div className="settings-overlay" onClick={onClose} />
@@ -102,6 +110,10 @@ export default function SettingsPanel({
             <div className="settings-row">
               <span className="settings-row__label">Auto-send after speech</span>
               <Toggle value={autoSend} onChange={setAutoSend} />
+            </div>
+            <div className="settings-row">
+              <span className="settings-row__label">Notification sound</span>
+              <Toggle value={chime} onChange={onChimeChange} />
             </div>
           </div>
 

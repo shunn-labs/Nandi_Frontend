@@ -2,6 +2,8 @@ import React, { useRef, useState } from 'react'
 import LogPanel from './LogPanel.jsx'
 import Transcript from './Transcript.jsx'
 import ActivityCard from './ActivityCard.jsx'
+import FilesPanel from './FilesPanel.jsx'
+import TasksPanel from './TasksPanel.jsx'
 import useCameras from '../hooks/useCameras.js'
 
 const TABS = [
@@ -9,13 +11,15 @@ const TABS = [
   { key: 'logs', label: 'Logs' },
   { key: 'activity', label: 'Activity' },
   { key: 'devices', label: 'Devices' },
+  { key: 'files', label: 'Files' },
+  { key: 'tasks', label: 'Tasks' },
 ]
 const DOMAIN_LABEL = { android: 'Phone', ubuntu_control: 'PC' }
 
 /**
  * The console at the bottom, like VS Code's terminal. Folded, it is one line
  * showing the latest log; open, it has tabs for the transcript, the brain's
- * logs, running jobs and connected devices. Drag its top edge to resize.
+ * logs, running jobs, connected devices, Nandi's files and scheduled tasks. Drag its top edge to resize.
  *
  * Every pane stays mounted while folded, so the log socket keeps collecting.
  */
@@ -23,7 +27,7 @@ export default function Console({
   open, onToggle, tab, onTab,
   messages, activities, onStopActivity,
   showLogs, connected,
-  capDevices, vision,
+  capDevices, vision, tasksVersion = 0,
 }) {
   const [latestLog, setLatestLog] = useState('')
   const cams = useCameras(open && tab === 'devices')
@@ -79,6 +83,8 @@ export default function Console({
           {activities.length === 0 && <div className="console__empty">No jobs yet.</div>}
           {[...activities].reverse().map(a => <ActivityCard key={a.id} item={a} onStop={onStopActivity} />)}
         </div>
+        <div hidden={tab !== 'files'}><FilesPanel active={open && tab === 'files'} /></div>
+        <div hidden={tab !== 'tasks'}><TasksPanel active={open && tab === 'tasks'} version={tasksVersion} /></div>
         <div hidden={tab !== 'devices'} className="console__pane">
           <table className="devices">
             <tbody>

@@ -14,6 +14,11 @@ function Toast({ toast, onDismiss }) {
         <b>{toast.title}</b>
         {toast.body && <span>{toast.body}</span>}
       </div>
+      {toast.action && (
+        <button className="toast__action" onClick={() => { toast.action.onSelect(); onDismiss(toast.id) }}>
+          {toast.action.label}
+        </button>
+      )}
       <button className="toast__close" onClick={() => onDismiss(toast.id)} aria-label="Dismiss">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
       </button>
@@ -25,7 +30,7 @@ function Toast({ toast, onDismiss }) {
  * Short notices for things that happen on their own (a phone event, a camera
  * that would not start). They slide in at the top right and leave by themselves.
  *
- * toasts  [{ id, title, body, tone: 'alert' | undefined }]
+ * toasts  [{ id, title, body, tone: 'alert' | undefined, action?: { label, onSelect } }]
  */
 export default function Toasts({ toasts, onDismiss }) {
   if (!toasts.length) return null
