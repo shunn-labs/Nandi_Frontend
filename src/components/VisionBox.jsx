@@ -149,6 +149,7 @@ export default function VisionBox({ box, onCapture, onAspect }) {
           className="vbox__media"
           src={`data:${box.mime || 'image/jpeg'};base64,${box.imageB64}`}
           alt={box.label}
+          draggable={false}
           onLoad={(e) => reportAspect(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
         />
       ) : (

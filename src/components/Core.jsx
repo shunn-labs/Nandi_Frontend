@@ -1,40 +1,45 @@
 import React, { useEffect, useRef } from 'react'
-import { THEMES } from '../lib/themes.js'
 
 /**
- * The living core: a particle sphere drawn on a canvas that fills the stage.
+ * The living core: a sphere of dots drawn on a canvas that fills the voice
+ * column. It shows what Nandi is doing without any text or lines:
  *
- * It shows what Nandi is doing without any text:
- *   idle       slow breathing
- *   listening  follows the microphone level
- *   thinking   spins faster, with a sweeping tick ring
- *   working    small satellites orbit it while a job runs
- *   speaking   follows the voice level
- *   needs      turns the theme's attention colour and pulses (a prompt is open)
- *   offline    dims and slows down
+ *   idle       slow rotation, gentle breathing
+ *   listening  opens up and brightens; ripples run inward with the mic level
+ *   speaking   ripples run outward with the voice level
+ *   thinking   the dots swirl, the centre faster than the edge
+ *   working    a few dots break away and orbit
+ *   needs      the theme's attention colour, pulsing slowly (a prompt is open)
+ *   offline    grey, dim and nearly still
+ *
+ * Colours come from the theme's CSS variables (--acc-rgb, --needs-rgb, --glow),
+ * so light and dark and every accent just work.
  *
  * Props:
- *   state         one of the keys of CORE_STATES
- *   compact       true while a panel is in focus: the core shrinks to the top
- *   large         ambient mode: a bigger core in the middle
- *   theme         key of THEMES, for the colours
- *   amplitudeRef  ref holding the current mic / voice level (0..1). A ref, not
- *                 a prop, so 60 level updates a second don't re-render React.
+ *   state         a key of CORE_STATES
+ *   hasCards      cards are on screen: the core sits higher in its column, or
+ *                 shrinks to the top on narrow screens where the cards cover it
+ *   large         ambient mode: a bigger core
+ *   amplitudeRef  ref holding the current mic / voice level (0..1). A ref, so
+ *                 60 level updates a second don't re-render React.
+ *   anchorRefs    elements kept just under the core (hint, job pill); their
+ *                 `top` is set here as the core moves
  *   onActivate    called when the core itself is clicked
  */
 export const CORE_STATES = {
-  idle:      { label: 'Standing by',       spin: 0.2,  ring: 0.2 },
-  listening: { label: 'Listening',         spin: 0.4,  ring: 0.6 },
-  thinking:  { label: 'Thinking',          spin: 1.5,  ring: 2.0 },
-  working:   { label: 'Working',           spin: 0.7,  ring: 1.0 },
-  speaking:  { label: 'Speaking',          spin: 0.45, ring: 0.7 },
-  needs:     { label: 'Needs your answer', spin: 0.25, ring: 0.3 },
-  offline:   { label: 'Offline',           spin: 0.03, ring: 0.03 },
+  idle:      { label: 'Standing by',       spin: 0.12 },
+  listening: { label: 'Listening',         spin: 0.2 },
+  speaking:  { label: 'Speaking',          spin: 0.18 },
+  thinking:  { label: 'Thinking',          spin: 0.9 },
+  working:   { label: 'Working',           spin: 0.35 },
+  needs:     { label: 'Needs your answer', spin: 0.1 },
+  offline:   { label: 'Offline',           spin: 0.02 },
 }
 
 const TAU = Math.PI * 2
-const OFFLINE_RGB = [100, 114, 138]
-const POINTS = fibonacciSphere(190)
+const OFFLINE_RGB = [128, 138, 152]
+const NARROW_PX = 820
+const POINTS = fibonacciSphere(560)
 
 function fibonacciSphere(n) {
   const pts = []
@@ -47,20 +52,40 @@ function fibonacciSphere(n) {
   return pts
 }
 
-export default function Core({ state, compact, large, theme, amplitudeRef, onActivate }) {
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
+
+function readColours() {
+  const cs = getComputedStyle(document.documentElement)
+  const rgb = (name, fallback) => {
+    const v = cs.getPropertyValue(name).split(',').map(Number)
+    return v.length === 3 && v.every(n => !Number.isNaN(n)) ? v : fallback
+  }
+  return {
+    acc: rgb('--acc-rgb', [47, 216, 255]),
+    needs: rgb('--needs-rgb', [255, 181, 71]),
+    glow: parseFloat(cs.getPropertyValue('--glow')) || 0.14,
+  }
+}
+
+export default function Core({ state, hasCards, large, amplitudeRef, anchorRefs, onActivate }) {
   const canvasRef = useRef(null)
-  // Everything the animation loop reads lives in one ref, so props can change
+  // Everything the animation loop reads lives in refs, so props can change
   // without restarting the loop.
   const propsRef = useRef({})
-  propsRef.current = { state, compact, large, theme, amplitudeRef }
+  propsRef.current = { state, hasCards, large, amplitudeRef, anchorRefs }
   const geomRef = useRef({ x: 0, y: 0, r: 0 })
 
   useEffect(() => {
     const canvas = canvasRef.current
     const ctx = canvas.getContext('2d')
     const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-    const sim = { t: 0, rot: 0, ringA: 0, spin: 0.2, ring: 0.2, amp: 0, tick: 0, col: null, init: false, ...geomRef.current }
-    let w = 0, h = 0, dpr = 1, raf = 0, last = performance.now()
+    const sim = { t: 0, rot: 0, spin: 0.12, level: 0, swirl: 0, col: null, init: false, x: 0, y: 0, r: 0 }
+    let colours = readColours()
+    let w = 0, h = 0, dpr = 1, raf = 0, last = performance.now(), anchorTop = null
+
+    // Re-read the theme's colours whenever the accent or light/dark changes.
+    const themeWatch = new MutationObserver(() => { colours = readColours() })
+    themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ['data-palette', 'data-scheme'] })
 
     const resize = () => {
       const rect = canvas.getBoundingClientRect()
@@ -79,47 +104,48 @@ export default function Core({ state, compact, large, theme, amplitudeRef, onAct
       const dt = Math.min(0.05, (now - last) / 1000)
       last = now
       const p = propsRef.current
-      const S = CORE_STATES[p.state] || CORE_STATES.idle
-      const T = THEMES[p.theme] || THEMES.ion
-      const k = 1 - Math.exp(-dt * 5)
+      const st = CORE_STATES[p.state] ? p.state : 'idle'
+      const k = 1 - Math.exp(-dt * 4.5)
       const speed = reduceMotion ? 0.3 : 1
 
-      // Where the core should be: centre, top (compact) or big (ambient).
-      const tx = w / 2
-      const ty = p.large ? h * 0.4 : p.compact ? 34 : h * 0.44
-      const tr = p.large ? clamp(Math.min(w, h) * 0.16, 60, 140)
-        : p.compact ? 17 : clamp(Math.min(w, h) * 0.11, 40, 96)
-      if (!sim.init) { Object.assign(sim, { x: tx, y: ty, r: tr, init: true }) }
+      // Where the core should be.
+      let tx = w / 2, ty, tr
+      if (p.large) { ty = h * 0.4; tr = clamp(Math.min(w, h) * 0.17, 60, 140) }
+      else if (p.hasCards && window.innerWidth <= NARROW_PX) { ty = 46; tr = 24 }
+      else if (p.hasCards) { ty = h * 0.36; tr = clamp(Math.min(w, h) * 0.24, 56, 104) }
+      else { ty = h * 0.42; tr = clamp(Math.min(w, h) * 0.15, 56, 126) }
+      if (!sim.init) Object.assign(sim, { x: tx, y: ty, r: tr, init: true })
       sim.x += (tx - sim.x) * k; sim.y += (ty - sim.y) * k; sim.r += (tr - sim.r) * k
       geomRef.current = { x: sim.x, y: sim.y, r: sim.r }
 
-      const target = p.state === 'needs' ? T.needs : p.state === 'offline' ? OFFLINE_RGB : T.core
+      const target = st === 'needs' ? colours.needs : st === 'offline' ? OFFLINE_RGB : colours.acc
       if (!sim.col) sim.col = target.slice()
       for (let i = 0; i < 3; i++) sim.col[i] += (target[i] - sim.col[i]) * k
 
       sim.t += dt * speed
-      sim.spin += (S.spin - sim.spin) * k
-      sim.ring += (S.ring - sim.ring) * k
-      sim.tick += ((p.state === 'thinking' ? 1 : 0) - sim.tick) * k
+      sim.spin += (CORE_STATES[st].spin - sim.spin) * k
       sim.rot += dt * sim.spin * speed
-      sim.ringA += dt * sim.ring * speed
+      sim.swirl += ((st === 'thinking' ? 1 : 0) - sim.swirl) * k
+      const level = st === 'listening' || st === 'speaking' ? Math.min(1, p.amplitudeRef?.current || 0) : 0
+      sim.level += (level - sim.level) * (1 - Math.exp(-dt * 16))
 
-      const level = p.amplitudeRef?.current || 0
-      const ampTarget = p.state === 'listening' || p.state === 'speaking' ? Math.min(1, level)
-        : p.state === 'thinking' ? 0.12
-        : 0.035 + 0.025 * Math.sin(sim.t * 1.2)
-      sim.amp += (ampTarget - sim.amp) * (1 - Math.exp(-dt * 14))
+      const R = draw(ctx, dpr, w, h, sim, st, colours.glow)
 
-      draw(ctx, dpr, w, h, sim, p.state)
+      // Keep the hint and job pill just under the core.
+      const top = Math.round(sim.y + R * 1.5 + 18)
+      if (top !== anchorTop) {
+        anchorTop = top
+        for (const ref of p.anchorRefs || []) if (ref.current) ref.current.style.top = `${top}px`
+      }
     }
     raf = requestAnimationFrame(frame)
-    return () => { cancelAnimationFrame(raf); ro.disconnect() }
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); themeWatch.disconnect() }
   }, [])
 
   const handlePointerDown = (e) => {
     const { x, y, r } = geomRef.current
     const rect = e.currentTarget.getBoundingClientRect()
-    if (Math.hypot(e.clientX - rect.left - x, e.clientY - rect.top - y) < r * 1.5) onActivate?.()
+    if (Math.hypot(e.clientX - rect.left - x, e.clientY - rect.top - y) < r * 1.4) onActivate?.()
   }
 
   return (
@@ -133,85 +159,62 @@ export default function Core({ state, compact, large, theme, amplitudeRef, onAct
   )
 }
 
-function clamp(v, a, b) { return Math.max(a, Math.min(b, v)) }
-
-function draw(ctx, dpr, w, h, sim, state) {
-  const { x, y, r: R, amp } = sim
+/** Draws one frame; returns the radius actually drawn (it breathes and pulses). */
+function draw(ctx, dpr, w, h, sim, st, glow) {
+  const { x, y, level } = sim
+  let R = sim.r
   const [r, g, b] = sim.col.map(Math.round)
-  const alpha = state === 'offline' ? 0.5 : 1
+  const alpha = st === 'offline' ? 0.5 : 1
   const rgba = (a) => `rgba(${r},${g},${b},${a})`
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.clearRect(0, 0, w, h)
 
-  // soft glow
-  let gr = ctx.createRadialGradient(x, y, R * 0.2, x, y, R * 2.6)
-  gr.addColorStop(0, rgba(0.16 * alpha * (1 + amp)))
+  if (st === 'listening') R *= 1.06 + level * 0.06
+  else if (st === 'needs') R *= 1 + 0.035 * Math.sin(sim.t * 3.2)
+  else if (st === 'idle') R *= 1 + 0.018 * Math.sin(sim.t * 1.1)
+
+  // soft glow, no edges
+  const gr = ctx.createRadialGradient(x, y, R * 0.1, x, y, R * 2.3)
+  gr.addColorStop(0, rgba(glow * alpha * (1 + level * 1.2)))
   gr.addColorStop(1, rgba(0))
   ctx.fillStyle = gr
-  ctx.beginPath(); ctx.arc(x, y, R * 2.6, 0, TAU); ctx.fill()
+  ctx.beginPath(); ctx.arc(x, y, R * 2.3, 0, TAU); ctx.fill()
 
-  // tick ring, only while thinking
-  if (sim.tick > 0.02) {
-    ctx.save(); ctx.translate(x, y); ctx.rotate(sim.ringA * 0.25)
-    const sweep = (sim.t * 2.6) % TAU
-    for (let i = 0; i < 60; i++) {
-      const ang = (i / 60) * TAU
-      const d = Math.abs(((ang - sweep + TAU * 1.5) % TAU) - Math.PI)
-      const a = (0.12 + Math.max(0, 0.8 - (Math.PI - d) * 1.1)) * sim.tick * alpha
-      const r1 = R * 1.55, r2 = r1 + R * 0.07
-      ctx.strokeStyle = rgba(a); ctx.lineWidth = 1
-      ctx.beginPath()
-      ctx.moveTo(Math.cos(ang) * r1, Math.sin(ang) * r1)
-      ctx.lineTo(Math.cos(ang) * r2, Math.sin(ang) * r2)
-      ctx.stroke()
-    }
-    ctx.restore()
-  }
-
-  // two quiet orbit arcs
-  for (let j = 0; j < 2; j++) {
-    ctx.save(); ctx.translate(x, y); ctx.rotate(sim.ringA * (j ? -1.3 : 1) + j * 2)
-    ctx.strokeStyle = rgba((j ? 0.16 : 0.32) * alpha); ctx.lineWidth = 1
-    ctx.beginPath(); ctx.arc(0, 0, R * (1.22 + j * 0.14), 0, TAU * (j ? 0.55 : 0.72)); ctx.stroke()
-    ctx.restore()
-  }
-
-  // particle sphere
-  const cr = Math.cos(sim.rot), sr = Math.sin(sim.rot), ct = Math.cos(0.38), st = Math.sin(0.38)
+  const cr = Math.cos(sim.rot), sr = Math.sin(sim.rot), ct = Math.cos(0.32), stl = Math.sin(0.32)
+  const dotScale = 0.55 + 0.45 * (R / 80)
   for (const p of POINTS) {
-    const X = p.x * cr - p.z * sr, Z = p.x * sr + p.z * cr
-    const Y2 = p.y * ct - Z * st, Z2 = p.y * st + Z * ct
-    let d = 1 + amp * 0.5 * Math.sin(p.seed + sim.t * 5 + p.y * 3)
-    if (state === 'thinking') d -= 0.12 * (0.5 + 0.5 * Math.sin(sim.t * 3 + p.seed))
+    let X = p.x * cr - p.z * sr
+    const Z = p.x * sr + p.z * cr
+    let Y = p.y * ct - Z * stl
+    const Z2 = p.y * stl + Z * ct
+    if (sim.swirl > 0.01) {
+      const ang = sim.swirl * (1 - Math.hypot(X, Y)) * sim.t * 1.6
+      const ca = Math.cos(ang), sa = Math.sin(ang)
+      const X2 = X * ca - Y * sa
+      Y = X * sa + Y * ca; X = X2
+    }
+    const rho = Math.min(1, Math.hypot(X, Y))
+    let d = 1
+    if (st === 'speaking') d += level * (0.06 + 0.2 * Math.max(0, Math.sin(rho * 11 - sim.t * 10))) * (0.35 + 0.65 * rho)
+    else if (st === 'listening') d += level * 0.16 * Math.sin(rho * 9 + sim.t * 8) * rho - 0.02
+    else if (st === 'thinking') d -= 0.08 * (0.5 + 0.5 * Math.sin(sim.t * 3 + p.seed))
+    else d += 0.012 * Math.sin(p.seed + sim.t * 1.4)
     const depth = (Z2 + 1) / 2
-    const size = (0.5 + 1.1 * depth) * (R / 70 + 0.35)
-    ctx.fillStyle = rgba((0.1 + 0.65 * depth) * alpha)
-    ctx.fillRect(x + X * R * d - size / 2, y + Y2 * R * d - size / 2, size, size)
+    const size = (0.55 + 1.35 * depth) * dotScale * (st === 'speaking' ? 1 + level * 0.5 * rho : 1)
+    const a = (0.12 + 0.78 * depth) * alpha * (st === 'listening' ? 0.85 + level * 0.3 : 1)
+    ctx.fillStyle = rgba(Math.min(1, a))
+    ctx.beginPath(); ctx.arc(x + X * R * d, y + Y * R * d, size, 0, TAU); ctx.fill()
   }
 
-  // bright centre
-  gr = ctx.createRadialGradient(x, y, 0, x, y, R * 0.6)
-  gr.addColorStop(0, `rgba(255,255,255,${0.85 * alpha})`)
-  gr.addColorStop(0.35, rgba(0.42 * alpha * (1 + amp)))
-  gr.addColorStop(1, rgba(0))
-  ctx.fillStyle = gr
-  ctx.beginPath(); ctx.arc(x, y, R * 0.6 * (1 + amp * 0.25), 0, TAU); ctx.fill()
-
-  // waiting for an answer: a slow outward pulse
-  if (state === 'needs') {
-    const ph = (sim.t % 1.8) / 1.8
-    ctx.strokeStyle = rgba((1 - ph) * 0.55); ctx.lineWidth = 1.2
-    ctx.beginPath(); ctx.arc(x, y, R * (1.2 + ph), 0, TAU); ctx.stroke()
-  }
-
-  // satellites while a job runs
-  if (state === 'working') {
-    for (let i = 0; i < 3; i++) {
-      const ang = sim.t * 0.9 + (i * TAU) / 3
-      ctx.fillStyle = rgba(0.85)
+  if (st === 'working') {
+    for (let i = 0; i < 5; i++) {
+      const ang = sim.t * (0.8 + i * 0.07) + (i * TAU) / 5
+      const rr = R * (1.45 + 0.08 * Math.sin(sim.t * 2 + i))
+      ctx.fillStyle = rgba(0.85 * alpha)
       ctx.beginPath()
-      ctx.arc(x + Math.cos(ang) * R * 1.9, y + Math.sin(ang) * R * 1.9 * 0.4, R > 30 ? 3 : 1.8, 0, TAU)
+      ctx.arc(x + Math.cos(ang) * rr, y + Math.sin(ang) * rr * 0.55, Math.max(1.4, 2.2 * dotScale), 0, TAU)
       ctx.fill()
     }
   }
+  return R
 }

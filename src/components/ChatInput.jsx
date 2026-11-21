@@ -5,8 +5,8 @@ import { startRecording, stopRecording, isRecording } from '../lib/audioRecorder
 import { stop as stopTts, getIsPlaying } from '../lib/ttsPlayer.js'
 
 /**
- * The command bar: attachments, the text box and one round button that is the
- * mic while the box is empty and Send once there is something to send.
+ * The compact, voice-first bar: a big mic button first, then a short text box,
+ * attach, and Send only once there is something to send.
  *
  * Typing or starting the mic while Nandi is speaking cuts the voice off.
  *
@@ -147,18 +147,19 @@ const ChatInput = forwardRef(function ChatInput({
 
       <div className={`chat-input-bar${recording ? ' chat-input-bar--listening' : ''}`}>
         <button
-          className="chat-input-bar__attach-btn"
-          title="Attach files"
-          aria-label="Attach files"
-          onClick={() => attachRef.current?.triggerSelect()}
+          className={`chat-input-bar__mic${recording ? ' chat-input-bar__mic--on' : ''}`}
+          title={recording ? 'Stop and send' : 'Talk (or hold Space)'}
+          aria-label={recording ? 'Stop recording' : 'Talk'}
+          aria-pressed={recording}
+          onClick={handleMicClick}
         >
-          <IconPaperclip />
+          <IconMic />
         </button>
 
         <textarea
           ref={textareaRef}
           className="chat-input-bar__textarea"
-          placeholder={recording ? 'Listening…' : 'Ask Nandi'}
+          placeholder={recording ? 'Listening…' : 'Talk, or type to Nandi'}
           aria-label="Message Nandi"
           value={text}
           onChange={handleChange}
@@ -166,24 +167,24 @@ const ChatInput = forwardRef(function ChatInput({
           rows={1}
         />
 
-        {showSend ? (
+        <button
+          className="chat-input-bar__icon-btn"
+          title="Attach files"
+          aria-label="Attach files"
+          onClick={() => attachRef.current?.triggerSelect()}
+        >
+          <IconPaperclip size={16} />
+        </button>
+
+        {showSend && (
           <button
-            className="chat-input-bar__main-btn chat-input-bar__main-btn--send"
+            className="chat-input-bar__icon-btn chat-input-bar__icon-btn--send"
             title="Send"
             aria-label="Send"
             onClick={handleSend}
             disabled={uploading}
           >
-            <IconSend />
-          </button>
-        ) : (
-          <button
-            className={`chat-input-bar__main-btn${recording ? ' chat-input-bar__main-btn--recording' : ''}`}
-            title={recording ? 'Stop and send' : 'Talk (or hold Space)'}
-            aria-label={recording ? 'Stop recording' : 'Talk'}
-            onClick={handleMicClick}
-          >
-            <IconMic />
+            <IconSend size={16} />
           </button>
         )}
       </div>

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import TopBar, { AmbientClock } from './TopBar.jsx'
 import Core from './Core.jsx'
-import Stage from './Stage.jsx'
+import CardStack from './CardStack.jsx'
 import JobStrip from './JobStrip.jsx'
 import Captions from './Captions.jsx'
 import Toasts from './Toasts.jsx'
@@ -24,7 +24,7 @@ import {
 } from '../lib/wsAdapter.js'
 import { speak, stop as stopTts } from '../lib/ttsPlayer.js'
 import { onUiFrame, sendDisplay } from '../lib/visionControl.js'
-import { THEMES, applyTheme, loadTheme } from '../lib/themes.js'
+import { THEMES, SCHEMES, applyTheme, applyScheme, loadTheme, loadScheme } from '../lib/themes.js'
 import {
   asText, toProblem, findPending, insertCard, promptMessage, eventMessage,
   isOpenPrompt, cardLabel, needsPanel, firstSentence,
@@ -39,27 +39,28 @@ const REPLY_TIMEOUT_MS = 90000
 // Answered prompts stay on screen this long, so their outcome can be read.
 const DONE_PROMPT_MS = 4000
 
-// Only the newest long answers keep a panel; older ones live in the transcript.
-const MAX_ANSWER_PANELS = 3
+// Only the newest long answers keep a card; older ones live in the transcript.
+const MAX_ANSWER_CARDS = 3
 
 // Two presses of Esc within this window clear the whole screen.
 const DOUBLE_ESC_MS = 600
 
-// What a vision panel shows under its title: what it is and where it comes
+// What a vision card shows under its title: what it is and where it comes
 // from (the stream id, or the camera a snapshot was taken from).
 function visionSource(b) {
   if (b.type === 'frame') return b.camera ? `snapshot · ${b.camera}` : 'snapshot'
   return `${b.type === 'camera' ? 'this device' : 'live'} · ${b.streamId}`
 }
-// Shape of a vision panel until its picture has loaded.
+// Shape of a vision card until its picture has loaded.
 const DEFAULT_ASPECT = 16 / 9
 
 const isTyping = (el) => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
 
 /**
- * The main screen: the living core, a stage where panels come and go, the
- * command bar and a folded console. This component owns the conversation (the
- * chat socket, the brain's display channel) and decides what goes where.
+ * The main screen. A voice column on the left (the dotted core, captions and a
+ * compact bar) and, once Nandi shows anything, a stack of cards on the right.
+ * A folded console runs along the bottom. This component owns the conversation
+ * (the chat socket, the brain's display channel) and decides what goes where.
  */
 export default function ChatView({ onLogout }) {
   // ── Conversation ───────────────────────────────────────
@@ -73,12 +74,11 @@ export default function ChatView({ onLogout }) {
   const [ttsEnabled, setTtsEnabled] = useState(() => localStorage.getItem('nandi_tts_enabled') !== 'false')
   const [showLogs, setShowLogs] = useState(() => localStorage.getItem('nandi_show_logs') !== 'false')
   const [theme, setThemeState] = useState(loadTheme)
+  const [scheme, setSchemeState] = useState(loadScheme)
 
   // ── Screen ─────────────────────────────────────────────
-  const [focusId, setFocusId] = useState(null)
-  const [minimized, setMinimized] = useState(() => new Set())
-  // Prompt and answer panels the user closed (or that finished). They stay in
-  // the transcript; only their panel goes.
+  // Prompt and answer cards the user dismissed (or that finished). They stay in
+  // the transcript; only their card goes.
   const [hidden, setHidden] = useState(() => new Set())
   const [consoleOpen, setConsoleOpen] = useState(false)
   const [consoleTab, setConsoleTab] = useState('transcript')
@@ -98,6 +98,11 @@ export default function ChatView({ onLogout }) {
 
   const vision = useVisionBoxes()
   const chatInputRef = useRef(null)
+  const stackRef = useRef(null)
+  // Kept just under the core by Core itself, wherever the core moves.
+  const hintRef = useRef(null)
+  const stripRef = useRef(null)
+  const coreAnchors = useMemo(() => [hintRef, stripRef], [])
   const dragCountRef = useRef(0)
   const lastEscRef = useRef(0)
 
@@ -363,6 +368,7 @@ export default function ChatView({ onLogout }) {
   }, [])
 
   const setTheme = useCallback((key) => setThemeState(applyTheme(key)), [])
+  const setScheme = useCallback((key) => setSchemeState(applyScheme(key)), [])
   const cycleTheme = useCallback(() => {
     const keys = Object.keys(THEMES)
     setThemeState(prev => applyTheme(keys[(keys.indexOf(prev) + 1) % keys.length]))
@@ -375,18 +381,19 @@ export default function ChatView({ onLogout }) {
     vision.clearCameraError()
   }, [vision.cameraError, vision.clearCameraError, toast])
 
-  // ── What is on the stage ───────────────────────────────
+  // ── What is on screen ──────────────────────────────────
   const setAspect = useCallback((id, ratio) => {
     setAspects(prev => (Math.abs((prev[id] || 0) - ratio) < 0.01 ? prev : { ...prev, [id]: ratio }))
   }, [])
 
-  const panels = useMemo(() => {
+  // Newest first, as the card stack shows them.
+  const cards = useMemo(() => {
     const list = vision.boxes.map(b => ({
       id: b.id, at: b.at, title: b.label, source: visionSource(b),
       aspect: aspects[b.id] || DEFAULT_ASPECT,
       content: <VisionBox box={b} onCapture={handleVisionCapture} onAspect={(r) => setAspect(b.id, r)} />,
     }))
-    const answers = messages.filter(m => m.role === 'ai' && m.panel).slice(-MAX_ANSWER_PANELS)
+    const answers = messages.filter(m => m.role === 'ai' && m.panel).slice(-MAX_ANSWER_CARDS)
     for (const m of messages) {
       if (hidden.has(m.id)) continue
       if (m.role === 'prompt') {
@@ -408,18 +415,10 @@ export default function ChatView({ onLogout }) {
         })
       }
     }
-    return list.sort((a, b) => a.at - b.at)
+    return list.sort((a, b) => b.at - a.at)
   }, [vision.boxes, aspects, messages, hidden, handleVisionCapture, handlePromptAnswer, setAspect])
 
-  // A new panel comes to the front.
-  const newestId = panels.length ? panels[panels.length - 1].id : null
-  useEffect(() => {
-    if (!newestId) return
-    setFocusId(newestId)
-    setMinimized(prev => (prev.has(newestId) ? new Set([...prev].filter(id => id !== newestId)) : prev))
-  }, [newestId])
-
-  // Answered prompts leave the stage after a moment (they stay in the transcript).
+  // Answered prompts leave the screen after a moment (they stay in the transcript).
   useEffect(() => {
     const done = messages.filter(m => m.role === 'prompt' && !isOpenPrompt(m) && !hidden.has(m.id))
     if (!done.length) return undefined
@@ -427,38 +426,26 @@ export default function ChatView({ onLogout }) {
     return () => clearTimeout(t)
   }, [messages, hidden])
 
-  const isVisionPanel = useCallback((id) => vision.boxes.some(b => b.id === id), [vision.boxes])
+  const isVisionCard = useCallback((id) => vision.boxes.some(b => b.id === id), [vision.boxes])
 
-  const focusPanel = useCallback((id) => {
-    setMinimized(prev => new Set([...prev].filter(x => x !== id)))
-    setFocusId(id)
-  }, [])
-
-  const closePanel = useCallback((id) => {
-    if (isVisionPanel(id)) vision.close(id)
+  const closeCard = useCallback((id) => {
+    if (isVisionCard(id)) vision.close(id)
     else setHidden(prev => new Set(prev).add(id))
-    setFocusId(f => (f === id ? null : f))
-  }, [isVisionPanel, vision])
-
-  const minimizePanel = useCallback((id) => {
-    setMinimized(prev => new Set(prev).add(id))
-    setFocusId(f => (f === id ? null : f))
-  }, [])
+  }, [isVisionCard, vision])
 
   const clearStage = useCallback(() => {
     vision.closeAll()
-    setHidden(prev => new Set([...prev, ...panels.map(p => p.id)]))
-    setFocusId(null)
-  }, [vision, panels])
+    setHidden(prev => new Set([...prev, ...cards.map(c => c.id)]))
+  }, [vision, cards])
 
-  const focused = panels.some(p => p.id === focusId) && !minimized.has(focusId)
+  const hasCards = cards.length > 0
 
-  // Opening a stream that is already on screen brings its panel to the front.
+  // Opening a stream that is already on screen brings its card to the front.
   const openStream = useCallback((streamId, label) => {
     const existing = vision.boxes.find(b => b.streamId === streamId)
-    if (existing) focusPanel(existing.id)
+    if (existing) stackRef.current?.goTo(existing.id)
     else vision.openStream(streamId, label)
-  }, [vision, focusPanel])
+  }, [vision])
 
   // ── What Nandi is doing ────────────────────────────────
   const pending = useMemo(() => [...messages].reverse().find(m => m.thinking), [messages])
@@ -507,8 +494,12 @@ export default function ChatView({ onLogout }) {
     { label: 'Clear the conversation', hint: 'Ctrl L', onSelect: clearConversation },
     { label: 'Stop what is running', hint: 'Shift Esc', onSelect: stopAllJobs },
     { label: 'Ambient mode', onSelect: () => setAmbient(true) },
+    { label: 'Show all cards', hint: 'O', onSelect: () => stackRef.current?.toggleOverview(true) },
+    ...Object.entries(SCHEMES).map(([key, label]) => ({
+      label: `Appearance: ${label}${key === scheme ? ' (current)' : ''}`, hint: 'look', onSelect: () => setScheme(key),
+    })),
     ...Object.entries(THEMES).map(([key, t]) => ({
-      label: `Theme: ${t.name}${key === theme ? ' (current)' : ''}`, hint: 'T', onSelect: () => setTheme(key),
+      label: `Accent: ${t.name}${key === theme ? ' (current)' : ''}`, hint: 'T', onSelect: () => setTheme(key),
     })),
     { label: 'Sign out', onSelect: onLogout },
   ]
@@ -516,8 +507,7 @@ export default function ChatView({ onLogout }) {
   // ── Keyboard ───────────────────────────────────────────
   // Read through a ref so the listener is attached once.
   const keysRef = useRef(null)
-  keysRef.current = { ambient, paletteOpen, settingsOpen, speaking, focusId: focused ? focusId : null,
-    closePanel, clearStage, stopAllJobs, cycleTheme, clearConversation, toggleMic }
+  keysRef.current = { ambient, paletteOpen, settingsOpen, speaking, clearStage, stopAllJobs, cycleTheme, clearConversation, toggleMic }
 
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -535,11 +525,16 @@ export default function ChatView({ onLogout }) {
         const now = performance.now()
         if (now - lastEscRef.current < DOUBLE_ESC_MS) { k.clearStage(); lastEscRef.current = 0; return }
         lastEscRef.current = now
-        if (k.focusId) k.closePanel(k.focusId)
+        const stack = stackRef.current
+        if (stack?.overview) stack.toggleOverview(false)
+        else stack?.closeFront()
         return
       }
       if (isTyping(document.activeElement) || mod || e.altKey) return
       if (e.key === '/') { e.preventDefault(); chatInputRef.current?.focus(); return }
+      if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); stackRef.current?.step(1); return }
+      if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); stackRef.current?.step(-1); return }
+      if (e.key === 'o' || e.key === 'O') { stackRef.current?.toggleOverview(); return }
       if (e.key === 't' || e.key === 'T') { k.cycleTheme(); return }
       if (e.code === 'Space' && !e.repeat && document.activeElement?.tagName !== 'BUTTON') {
         e.preventDefault()
@@ -586,40 +581,42 @@ export default function ChatView({ onLogout }) {
     }
   }, [])
 
-  const showHint = messages.length === 0 && panels.length === 0 && coreState === 'idle'
+  const showHint = messages.length === 0 && !hasCards && coreState === 'idle'
 
   return (
-    <div className={`deck${ambient ? ' deck--ambient' : ''}`}
+    <div className={`screen${hasCards ? ' screen--cards' : ''}${ambient ? ' screen--ambient' : ''}`}
       onPointerDownCapture={ambient ? () => setAmbient(false) : undefined}>
-      <TopBar coreState={coreState} menuItems={menuItems} />
+      <TopBar coreState={coreState} menuItems={menuItems} scheme={scheme} onScheme={setScheme} />
 
-      <main className="deck__stage">
-        <Core state={coreState} compact={focused && !ambient} large={ambient} theme={theme}
-          amplitudeRef={amplitudeRef} onActivate={toggleMic} />
-        {showHint && <p className="deck__hint">Click the core to talk, or press <kbd>/</kbd> to type</p>}
-        <div className={`deck__strip${focused ? ' deck__strip--top' : ''}`}>
-          <JobStrip job={runningJob} pending={pending ? pending.progress : null} onStop={handleStopTask} />
-        </div>
-        <Stage panels={panels} focusId={focusId} minimized={minimized}
-          onFocus={focusPanel} onClose={closePanel} onMinimize={minimizePanel} />
-        <Captions caption={caption} hold={!!pending || speaking} />
+      <main className="screen__main">
+        <section className="voice" aria-label="Nandi">
+          <Core state={coreState} hasCards={hasCards} large={ambient}
+            amplitudeRef={amplitudeRef} anchorRefs={coreAnchors} onActivate={toggleMic} />
+          {showHint && (
+            <p className="voice__hint" ref={hintRef}>Click the core or hold <kbd>Space</kbd> to talk</p>
+          )}
+          <div className="voice__strip" ref={stripRef}>
+            <JobStrip job={runningJob} pending={pending ? pending.progress : null} onStop={handleStopTask} />
+          </div>
+          <Captions caption={caption} hold={!!pending || speaking} />
+          <div className="voice__bar">
+            <ChatInput ref={chatInputRef} onSend={handleSend}
+              onMicVolume={handleMicVolume} onRecordingChange={setRecording} />
+          </div>
+        </section>
+
+        <CardStack ref={stackRef} cards={cards} onClose={closeCard} onClear={clearStage} />
         <Toasts toasts={toasts} onDismiss={dismissToast} />
         {ambient && <AmbientClock />}
       </main>
 
-      <footer className="deck__dock">
-        <div className="deck__bar">
-          <ChatInput ref={chatInputRef} onSend={handleSend}
-            onMicVolume={handleMicVolume} onRecordingChange={setRecording} />
-        </div>
-        <Console
-          open={consoleOpen} onToggle={() => setConsoleOpen(o => !o)}
-          tab={consoleTab} onTab={setConsoleTab}
-          messages={messages} activities={activities} onStopActivity={handleStopTask}
-          showLogs={showLogs} connected={connected} capDevices={capDevices}
-          vision={{ ...vision, openStream }}
-        />
-      </footer>
+      <Console
+        open={consoleOpen} onToggle={() => setConsoleOpen(o => !o)}
+        tab={consoleTab} onTab={setConsoleTab}
+        messages={messages} activities={activities} onStopActivity={handleStopTask}
+        showLogs={showLogs} connected={connected} capDevices={capDevices}
+        vision={{ ...vision, openStream }}
+      />
 
       {settingsOpen && (
         <SettingsPanel
@@ -631,6 +628,8 @@ export default function ChatView({ onLogout }) {
           onShowLogsChange={handleShowLogsChange}
           theme={theme}
           onThemeChange={setTheme}
+          scheme={scheme}
+          onSchemeChange={setScheme}
         />
       )}
 
