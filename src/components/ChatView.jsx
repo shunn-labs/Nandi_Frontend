@@ -14,6 +14,7 @@ import VisionBox from './VisionBox.jsx'
 import Markdown from './Markdown.jsx'
 import ProblemList from './ProblemList.jsx'
 import PromptCard from './PromptCard.jsx'
+import PlanCard from './PlanCard.jsx'
 import NotificationCard from './NotificationCard.jsx'
 import { applyActivity } from './ActivityCard.jsx'
 import useVisionBoxes from '../hooks/useVisionBoxes.js'
@@ -428,6 +429,12 @@ export default function ChatView({ onLogout }) {
     armReplyTimer(requestId)
   }, [armReplyTimer, failPending])
 
+  // "Change something…" on a plan card is an ordinary chat message: the brain
+  // makes a new plan, sends a new card and closes the old one.
+  const handlePlanChange = useCallback((text) => {
+    handleSend(`Change the plan: ${text}`, [])
+  }, [handleSend])
+
   const clearConversation = useCallback(() => {
     setMessages([])
     setCaption(null)
@@ -584,8 +591,10 @@ export default function ChatView({ onLogout }) {
       if (m.role === 'prompt') {
         const open = isOpenPrompt(m)
         list.push({
-          id: m.id, at: m.ts, alert: open, title: cardLabel(m), source: open ? 'needs your answer' : 'done',
-          content: <PromptCard msg={m} onAnswer={handlePromptAnswer} />,
+          id: m.id, at: m.ts, alert: open, title: m.plan ? 'Plan' : cardLabel(m), source: open ? 'needs your answer' : 'done',
+          content: m.plan
+            ? <PlanCard msg={m} onAnswer={handlePromptAnswer} onChange={handlePlanChange} />
+            : <PromptCard msg={m} onAnswer={handlePromptAnswer} />,
         })
       } else if (m.role === 'notification' && (m.fileIds.length > 0 || needsPanel(m.body, []))) {
         list.push({
@@ -607,7 +616,7 @@ export default function ChatView({ onLogout }) {
       }
     }
     return list.sort((a, b) => b.at - a.at)
-  }, [vision.boxes, aspects, messages, hidden, handleVisionCapture, handlePromptAnswer, setAspect])
+  }, [vision.boxes, aspects, messages, hidden, handleVisionCapture, handlePromptAnswer, handlePlanChange, setAspect])
 
   // Answered prompts leave the screen after a moment (they stay in the transcript).
   useEffect(() => {

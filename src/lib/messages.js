@@ -6,7 +6,8 @@
 // the stage. Message roles:
 //   user      what you sent
 //   ai        Nandi's answer, or a `thinking` placeholder waiting for one
-//   prompt    a capability needs your answer (approval or small form)
+//   prompt    a capability needs your answer (approval or small form), or a
+//             job's plan waits for approval (a prompt carrying `plan`)
 //   activity  a job running somewhere (see ActivityCard.applyActivity)
 //   event     something that happened on a device (missed call, …)
 //   notification  Nandi telling you something on its own (a reminder, a
@@ -42,6 +43,55 @@ export function promptMessage(f) {
     device: asText(f.device), fields: Array.isArray(f.fields) ? f.fields : [],
     suggestions: Array.isArray(f.suggestions) ? f.suggestions.map(asText) : [],
     expiresAt: Number(f.expires_at) || Date.now() + 60000, status: 'open', ts: Date.now(),
+    // A prompt with no expiry of its own gets the 60 s above; a plan card does
+    // not count down on a guess (it waits for the brain to close it).
+    hasExpiry: Number(f.expires_at) > 0,
+    plan: planOf(f.plan),
+  }
+}
+
+// Where a plan step runs (contract C4). Anything else is shown as "other".
+const PLAN_DEVICES = new Set(['pc', 'phone', 'tablet', 'nandi', 'web', 'home', 'other'])
+const PLAN_DEVICE_ALIAS = { tab: 'tablet', android: 'phone', ubuntu: 'pc', ubuntu_control: 'pc' }
+
+const textList = (v) => (Array.isArray(v) ? v.map(asText).map(s => s.trim()).filter(Boolean) : [])
+
+/** A whole number of minutes in 1-120, or null. */
+const minutes = (v) => {
+  const n = Math.round(Number(v))
+  return Number.isFinite(n) && n >= 1 && n <= 120 ? n : null
+}
+
+/**
+ * The plan a job proposes, from a prompt frame's `plan` (contract C5), with
+ * every field checked: a malformed one becomes null (the card then shows as an
+ * ordinary prompt), and malformed parts become empty, so nothing the server
+ * sends can break the render.
+ */
+export function planOf(p) {
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return null
+  const steps = (Array.isArray(p.steps) ? p.steps : [])
+    .filter(s => s && typeof s === 'object' && !Array.isArray(s))
+    .map((s, i) => {
+      const raw = asText(s.device).trim().toLowerCase()
+      const device = PLAN_DEVICE_ALIAS[raw] || raw
+      return {
+        n: Number.isInteger(Number(s.n)) && Number(s.n) > 0 ? Number(s.n) : i + 1,
+        device: PLAN_DEVICES.has(device) ? device : 'other',
+        action: asText(s.action).trim(),
+      }
+    })
+    .filter(s => s.action)
+  return {
+    job_id: asText(p.job_id),
+    revision: Number.isInteger(Number(p.revision)) && Number(p.revision) > 0 ? Number(p.revision) : 1,
+    title: asText(p.title).trim(),
+    steps,
+    cant_do: textList(p.cant_do),
+    needs_from_user: textList(p.needs_from_user),
+    assumptions: textList(p.assumptions),
+    est_minutes: minutes(p.est_minutes),
+    time_limit_min: minutes(p.time_limit_min),
   }
 }
 
