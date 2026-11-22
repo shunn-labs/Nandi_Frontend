@@ -57,7 +57,7 @@ export default function PlanCard({ msg, onAnswer, onChange }) {
   return (
     <div className={`prompt-card plan-card ${live ? '' : 'prompt-card--done'}`}>
       <div className="prompt-card__head">
-        <span>{plan.revision > 1 ? `Changed plan · revision ${plan.revision}` : 'Plan · needs your OK'}</span>
+        <span>{plan.revision > 1 ? `Changed plan · revision ${plan.revision}` : 'Proposed plan'}</span>
         {live && left != null && <span className="prompt-card__timer">{clock(left)}</span>}
       </div>
       <div className="plan-card__title">{plan.title || msg.title || 'Plan'}</div>

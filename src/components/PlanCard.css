@@ -7,12 +7,12 @@
 .prompt-card__what { white-space: pre-line; }
 
 .plan-card__title {
-  color: var(--text-primary); font-weight: 600; font-size: 1rem; line-height: 1.35;
+  color: var(--text-primary); font-weight: 600; font-size: 1.05rem; line-height: 1.35;
 }
 
 .plan-card__steps {
   list-style: none; margin: 10px 0 0; padding: 0;
-  display: flex; flex-direction: column; gap: 6px;
+  display: flex; flex-direction: column; gap: 6px; font-size: 0.92rem;
 }
 .plan-card__step {
   display: grid; grid-template-columns: 18px auto 1fr; column-gap: 8px; align-items: baseline;
@@ -63,4 +63,5 @@
 .prompt-card__btn.plan-card__approve { background: var(--cyan); border-color: var(--cyan); color: var(--on-cyan); font-weight: 500; }
 .prompt-card__btn.plan-card__approve:hover:not(:disabled) { border-color: var(--cyan); filter: brightness(1.08); }
 
+.prompt-card__reply.plan-card__change input { font-size: 0.9rem; }
 .plan-card__asked { margin-top: 6px; font-size: 0.8rem; color: var(--text-secondary); }
