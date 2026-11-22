@@ -1,0 +1,12 @@
+/* ── Additions to the live job card (App.css .activity-card*) ──────────────────
+   Two classes per rule: this file is bundled before App.css. */
+
+/* A step being tried another way (a job's "↻" line). */
+.activity-step--retrying .activity-step__mark { color: var(--amber); }
+
+/* A job's card on the stage: the stage card is the frame, so the job card
+   drops its own box and keeps only the coloured edge that says how it is going. */
+.card .activity-card {
+  background: none; border-top: none; border-right: none; border-bottom: none;
+  border-radius: 0; padding: 2px 0 2px 12px; min-width: 0;
+}

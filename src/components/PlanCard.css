@@ -1,0 +1,67 @@
+/* ── Plan card (a job's plan waiting for approval; see PlanCard.jsx) ──────────
+   Builds on the prompt card's look (App.css .prompt-card*). Only theme tokens
+   are used, so every appearance and accent works. */
+
+/* A plain prompt keeps the brain's line breaks: a job's question, or the plan as
+   numbered lines from a brain that sends no `plan` object. */
+.prompt-card__what { white-space: pre-line; }
+
+.plan-card__title {
+  color: var(--text-primary); font-weight: 600; font-size: 1.05rem; line-height: 1.35;
+}
+
+.plan-card__steps {
+  list-style: none; margin: 10px 0 0; padding: 0;
+  display: flex; flex-direction: column; gap: 6px; font-size: 0.92rem;
+}
+.plan-card__step {
+  display: grid; grid-template-columns: 18px auto 1fr; column-gap: 8px; align-items: baseline;
+  color: var(--text-primary); line-height: 1.4;
+}
+.plan-card__n { color: var(--text-muted); font-family: var(--font-mono); font-size: 0.8rem; text-align: right; }
+.plan-card__device {
+  justify-self: start;
+  font: 500 0.7rem var(--font-mono); letter-spacing: 0.02em; text-transform: uppercase;
+  color: var(--text-secondary); background: var(--bg-hover);
+  border: 1px solid var(--border-light); border-radius: 4px; padding: 1px 6px;
+}
+.plan-card__device--nandi { color: var(--cyan); border-color: var(--cyan-edge); background: var(--cyan-soft); }
+.plan-card__action { min-width: 0; overflow-wrap: anywhere; }
+
+/* Can't do and Needs you: set apart, without alarm. */
+.plan-card__note {
+  margin-top: 10px; padding: 6px 10px;
+  border-left: 2px solid var(--border-light); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--bg-hover); font-size: 0.85rem; color: var(--text-secondary);
+}
+.plan-card__note--needs { border-left-color: var(--needs); background: var(--needs-soft); color: var(--text-primary); }
+.plan-card__note-head {
+  font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: 2px;
+}
+.plan-card__note--needs .plan-card__note-head { color: var(--needs); }
+.plan-card__note ul { margin: 0; padding-left: 16px; }
+.plan-card__note li + li { margin-top: 2px; }
+
+.plan-card__assume { margin-top: 8px; font-size: 0.78rem; color: var(--text-muted); }
+.plan-card__about { margin-top: 4px; font: 0.78rem var(--font-mono); color: var(--text-secondary); }
+
+.plan-card__limit { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.plan-card__limit-label { font-size: 0.8rem; color: var(--text-secondary); }
+.plan-card__chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.plan-card__chip {
+  background: none; color: var(--text-secondary);
+  border: 1px solid var(--border-light); border-radius: 999px;
+  padding: 3px 11px; font: inherit; font-size: 0.8rem; cursor: pointer;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+}
+.plan-card__chip:hover { color: var(--text-primary); border-color: var(--text-muted); }
+.plan-card__chip--on,
+.plan-card__chip--on:hover { color: var(--text-primary); border-color: var(--cyan-dim); background: var(--cyan-soft); }
+
+/* Two classes: this file is bundled before App.css, whose .prompt-card__btn
+   would otherwise win. */
+.prompt-card__btn.plan-card__approve { background: var(--cyan); border-color: var(--cyan); color: var(--on-cyan); font-weight: 500; }
+.prompt-card__btn.plan-card__approve:hover:not(:disabled) { border-color: var(--cyan); filter: brightness(1.08); }
+
+.prompt-card__reply.plan-card__change input { font-size: 0.9rem; }
+.plan-card__asked { margin-top: 6px; font-size: 0.8rem; color: var(--text-secondary); }

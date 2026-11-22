@@ -12,19 +12,8 @@ import React, { useEffect, useState } from 'react'
  * onAnswer(id, action: 'accept'|'decline', content)
  */
 export default function PromptCard({ msg, onAnswer }) {
-  const [now, setNow] = useState(Date.now())
   const [values, setValues] = useState(() => initialValues(msg.fields))
-
-  const open = msg.status === 'open' || msg.status === 'invalid'
-  useEffect(() => {
-    if (!open) return undefined
-    const t = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(t)
-  }, [open])
-
-  const left = Math.max(0, Math.round((msg.expiresAt - now) / 1000))
-  const expired = open && left === 0
-  const live = open && !expired
+  const { left, expired, live } = usePromptClock(msg)
   const fields = msg.fields || []
   const single = fields.length === 1 ? fields[0] : null
   const choice = single && single.type === 'string' && (single.enum || []).length > 0
@@ -123,6 +112,27 @@ export default function PromptCard({ msg, onAnswer }) {
   )
 }
 
+/**
+ * A prompt's countdown, shared by PromptCard and PlanCard. `open` while it can
+ * still be answered here (also after an answer that did not fit); `live` while
+ * open and not run out; `left` the seconds to go, or null with countdown off
+ * (the card then stays live until the brain closes it).
+ */
+export function usePromptClock(msg, countdown = true) {
+  const [now, setNow] = useState(Date.now())
+  const open = msg.status === 'open' || msg.status === 'invalid'
+  const ticking = open && countdown
+  useEffect(() => {
+    if (!ticking) return undefined
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [ticking])
+
+  const left = countdown ? Math.max(0, Math.round((msg.expiresAt - now) / 1000)) : null
+  const expired = open && left === 0
+  return { open, left, expired, live: open && !expired }
+}
+
 function initialValues(fields) {
   const out = {}
   for (const f of fields || []) out[f.name] = f.default ?? (f.type === 'boolean' ? false : '')
@@ -150,7 +160,8 @@ function fieldInput(f, value, set) {
   )
 }
 
-function outcomeText(status) {
+/** How a closed prompt ended, from its status (the brain's prompt_closed outcome). */
+export function outcomeText(status) {
   switch (status) {
     case 'sent': return 'Sending your answer…'
     case 'allowed': return '✓ Allowed'
