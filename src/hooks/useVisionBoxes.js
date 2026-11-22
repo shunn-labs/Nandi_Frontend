@@ -11,31 +11,46 @@ import { startProducer } from '../lib/webrtcConsumer.js'
 let boxCounter = 0
 const nextBoxId = () => `vbox_${++boxCounter}_${Date.now()}`
 
-// Every vision answer can push a frame, so frames are capped. Only frames are
-// ever dropped to make room — never a stream or the user's camera preview.
+// Every vision answer can push a frame, and every spoken announcement an
+// audio clip, so both are capped. Only those are ever dropped to make room —
+// never a stream, a live audio card or the user's camera preview.
 const MAX_FRAME_BOXES = 12
+const MAX_AUDIO_BOXES = 6
 
-/** Drops the oldest frame boxes beyond MAX_FRAME_BOXES, leaving the rest alone. */
-function capFrames(boxes) {
-  let excess = boxes.filter(b => b.type === 'frame').length - MAX_FRAME_BOXES
+/** Drops the oldest boxes of `type` beyond `max`, leaving the rest alone. */
+function capType(boxes, type, max) {
+  let excess = boxes.filter(b => b.type === type).length - max
   if (excess <= 0) return boxes
   return boxes.filter(b => {
-    if (b.type !== 'frame' || excess <= 0) return true
+    if (b.type !== type || excess <= 0) return true
     excess -= 1
     return false
   })
 }
 
+const capFrames = (boxes) => capType(boxes, 'frame', MAX_FRAME_BOXES)
+const capAudio = (boxes) => capType(boxes, 'audio', MAX_AUDIO_BOXES)
+
+/** Adds a live audio card for `streamId` unless one is already open. */
+function withAudioStream(boxes, id, streamId, label) {
+  if (boxes.some(b => b.id === id)) return boxes
+  return [...boxes, { id, type: 'audio_stream', label: label || streamId, streamId, at: Date.now() }]
+}
+
 /**
- * The vision boxes on screen: frames and streams the brain shows on this
- * device (show_frame / show_stream / close / close_all on the vision-control
- * socket), streams opened by id, and this device's own camera.
+ * The media boxes on screen: frames, streams, files and audio the brain shows
+ * on this device (show_frame / show_stream / show_file / play_audio /
+ * show_audio_stream / close / close_all on the vision-control socket),
+ * streams and live audio opened by id, and this device's own camera.
  *
- * A box: { id, type: 'frame' | 'stream' | 'camera' | 'file', label, at, ...media }
- *   frame   imageB64, mime, camera, fileId   (a show_frame for a wid on screen updates it)
- *   file    file {file_id, filename, mime, size, kind}, url (signed download link)
- *   stream  streamId                 (deduped by id)
- *   camera  streamId, producer
+ * A box: { id, type: 'frame' | 'stream' | 'camera' | 'file' | 'audio' | 'audio_stream', label, at, ...media }
+ *   frame         imageB64, mime, camera, fileId   (a show_frame for a wid on screen updates it)
+ *   file          file {file_id, filename, mime, size, kind}, url (signed download link)
+ *   stream        streamId                 (deduped by id)
+ *   camera        streamId, producer
+ *   audio         url, mime, autoplay, durationS   (a clip from the audio server; deduped by wid,
+ *                                                   the 6 most recent are kept)
+ *   audio_stream  streamId                 (a live mic on the audio server; deduped by wid)
  */
 export default function useVisionBoxes() {
   const [boxes, setBoxes] = useState([])
@@ -79,6 +94,30 @@ export default function useVisionBoxes() {
         const box = { id, type: 'file', label: label || file.filename || 'File', file, url: msg.url || '', at: Date.now() }
         setBoxes(prev => (prev.some(b => b.id === id) ? prev.map(b => (b.id === id ? { ...box, at: b.at } : b))
           : [...prev, box]))
+      } else if (action === 'play_audio' && /^https?:\/\//i.test(msg.url || '')) {
+        // A clip from the audio server: a signed URL that needs no auth header.
+        const clip = {
+          type: 'audio',
+          label: label || 'Audio',
+          url: msg.url,
+          mime: msg.mime || '',
+          autoplay: msg.autoplay !== false,
+          durationS: Number(msg.duration_s) || 0,
+        }
+        setBoxes(prev => {
+          const existing = wid ? prev.find(b => b.id === wid) : null
+          // The same wid again is the same clip: keep the card (and wherever
+          // its playback is) rather than restarting or duplicating it.
+          if (existing?.type === 'audio') {
+            return existing.url === clip.url ? prev : prev.map(b => (b.id === wid ? { ...b, ...clip } : b))
+          }
+          const id = wid && !existing ? wid : nextBoxId()
+          return capAudio([...prev, { id, ...clip, at: Date.now() }])
+        })
+      } else if (action === 'show_audio_stream' && stream_id) {
+        // A live microphone on the audio server, heard over WebRTC.
+        const id = wid || `audio_stream_${stream_id}`
+        setBoxes(prev => withAudioStream(prev, id, stream_id, label))
       } else if (action === 'show_stream') {
         const id = wid || `stream_${stream_id}`
         setBoxes(prev => (prev.some(b => b.id === id) ? prev
@@ -86,8 +125,9 @@ export default function useVisionBoxes() {
       } else if (action === 'close' && wid) {
         setBoxes(prev => prev.filter(b => b.id !== wid))
       } else if (action === 'close_all') {
-        // Server-initiated, so it only clears what the server put up. The
-        // user's own camera preview stays, and its producer keeps running.
+        // Server-initiated, so it only clears what the server put up — audio
+        // cards included (they stop and hang up as they unmount). The user's
+        // own camera preview stays, and its producer keeps running.
         setBoxes(prev => prev.filter(b => b.type === 'camera'))
       }
     })
@@ -119,6 +159,12 @@ export default function useVisionBoxes() {
     const id = `stream_${streamId}`
     setBoxes(prev => (prev.some(b => b.id === id) ? prev
       : [...prev, { id, type: 'stream', label: label || streamId, streamId, at: Date.now() }]))
+  }, [])
+
+  // A live audio card opened from the live audio panel.
+  const openAudioStream = useCallback((streamId, label) => {
+    if (!streamId) return
+    setBoxes(prev => withAudioStream(prev, `audio_stream_${streamId}`, streamId, label))
   }, [])
 
   const startCamera = useCallback(async () => {
@@ -158,6 +204,6 @@ export default function useVisionBoxes() {
   return {
     boxes, ctrlConnected, ctrlError, cameraError, cameraOn,
     clearCameraError: useCallback(() => setCameraError(''), []),
-    close, closeAll, openStream, startCamera, stopCamera, toggleCamera,
+    close, closeAll, openStream, openAudioStream, startCamera, stopCamera, toggleCamera,
   }
 }

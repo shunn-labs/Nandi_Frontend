@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { startConsumer } from '../lib/webrtcConsumer.js'
 import { absoluteUrl, downloadFile, humanSize, SOURCE_LABEL } from '../lib/filesApi.js'
+import AudioBox from './AudioBox.jsx'
 
 /**
  * VisionBox — the picture inside a vision panel on the stage. The panel around
@@ -10,6 +11,8 @@ import { absoluteUrl, downloadFile, humanSize, SOURCE_LABEL } from '../lib/files
  * box.type === 'frame'   → static base64 image (box.mime, JPEG if unset)
  * box.type === 'camera'  → local producer preview (uses producer ref for switching)
  * box.type === 'file'    → a file from Nandi's file store (FileBox: play or download)
+ * box.type === 'audio'         → a clip from the audio server (AudioBox)
+ * box.type === 'audio_stream'  → a live mic from the audio server (AudioBox)
  *
  * Buttons:
  *   📸 Capture  — grab current frame as a File and inject into the chat
@@ -25,6 +28,9 @@ import { absoluteUrl, downloadFile, humanSize, SOURCE_LABEL } from '../lib/files
  */
 export default function VisionBox({ box, onCapture, onAspect }) {
   if (box.type === 'file') return <FileBox box={box} />
+  // Audio has nothing to capture and no picture, so it is its own component
+  // rather than more branches in MediaBox (and its hooks).
+  if (box.type === 'audio' || box.type === 'audio_stream') return <AudioBox box={box} />
   return <MediaBox box={box} onCapture={onCapture} onAspect={onAspect} />
 }
 

@@ -15,10 +15,14 @@
 //
 //    VITE_API_BASE=https://brain.shunnlabs.in   npm run dev
 //    VITE_VISION_SIGNAL_URL=ws://localhost:8765/ws/signal
+//    VITE_AUDIO_BASE=https://dev-audio.shunnlabs.in
 // ═══════════════════════════════════════════════════════════
 
-// Brain serves everything the app talks to over one origin: /auth/google-login,
-// /api/{tts,stt,upload}, and the /ws/{chat,vision-control,logs} sockets.
+// Brain serves the app's chat and display traffic over one origin:
+// /auth/google-login, /api/upload, and the /ws/{chat,vision-control,logs}
+// sockets. Speech is no longer the brain's: speech-to-text, text-to-speech,
+// voice conversation and live audio streams all live on the Nandi Audio Server
+// (AUDIO_BASE below) — the brain's old /api/stt and /api/tts are gone.
 // auth.shunnlabs.in is a separate, newer service this frontend does not use.
 const PROD_API = 'https://brain.shunnlabs.in'
 // 127.0.0.1, not localhost. "localhost" resolves to ::1 first in browsers on
@@ -30,6 +34,12 @@ const DEV_API = 'http://127.0.0.1:8000'
 
 const PROD_VISION_SIGNAL = 'wss://vision.shunnlabs.in/ws/signal'
 const DEV_VISION_SIGNAL = 'ws://127.0.0.1:8765/ws/signal'
+
+// Staging is https://dev-audio.shunnlabs.in — reach it with VITE_AUDIO_BASE or
+// the Settings override, never by default.
+const PROD_AUDIO = 'https://audio.shunnlabs.in'
+const DEV_AUDIO = 'http://127.0.0.1:8200'
+const AUDIO_OVERRIDE_KEY = 'nandi_audio_base'
 
 /** http(s) base for REST calls. */
 export const API_BASE =
@@ -64,8 +74,71 @@ export function getVisionApiBase() {
   return getVisionSignalUrl().replace(/^ws/, 'http').replace(/\/ws\/signal\/?$/, '')
 }
 
+// ── Nandi Audio Server ──────────────────────────────────────
+// STT (/v1/stt), TTS (/v1/tts), voice conversation over WebRTC (/v1/voice/offer)
+// and live audio streams (/v1/streams). Every endpoint takes the brain JWT the
+// app already holds, as `Authorization: Bearer …`.
+
+/** An http(s) origin + path without a trailing slash, or '' if `value` is not one. */
+export function normalizeHttpBase(value) {
+  const raw = (value || '').trim()
+  if (!raw) return ''
+  try {
+    const url = new URL(raw)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return ''
+    return `${url.origin}${url.pathname}`.replace(/\/+$/, '')
+  } catch {
+    return ''
+  }
+}
+
+/** The build's audio server, ignoring any Settings override. */
+export const DEFAULT_AUDIO_BASE =
+  normalizeHttpBase(import.meta.env.VITE_AUDIO_BASE) ||
+  (import.meta.env.DEV ? DEV_AUDIO : PROD_AUDIO)
+
+// Read at module load, so it must not throw: with site data blocked even
+// touching localStorage can, and that would stop the app from starting.
+function storedOverride() {
+  try { return normalizeHttpBase(localStorage.getItem(AUDIO_OVERRIDE_KEY)) } catch { return '' }
+}
+
+function resolveAudioBase() {
+  // Same precedence as the vision signal URL: a per-browser override from
+  // Settings, then the build's env, then the build mode's default. A malformed
+  // override is ignored rather than breaking every speech request.
+  return storedOverride() || DEFAULT_AUDIO_BASE
+}
+
+// `let`, and re-assigned by setAudioBaseOverride(): ES module exports are live
+// bindings, so every module that reads AUDIO_BASE at call time picks up a new
+// override from Settings without a page reload.
+export let AUDIO_BASE = resolveAudioBase()
+export let AUDIO_OFFER_URL = `${AUDIO_BASE}/v1/voice/offer`
+
+/** The override stored in this browser ('' when there is none). */
+export function getAudioBaseOverride() {
+  return storedOverride()
+}
+
+/**
+ * Point this browser at another audio server ('' goes back to the default).
+ * Returns the base now in use. Throws on anything that is not an http(s) URL.
+ */
+export function setAudioBaseOverride(value) {
+  const raw = (value || '').trim()
+  const base = normalizeHttpBase(raw)
+  if (raw && !base) throw new Error('Enter a full http:// or https:// address.')
+  if (base && base !== DEFAULT_AUDIO_BASE) localStorage.setItem(AUDIO_OVERRIDE_KEY, base)
+  else localStorage.removeItem(AUDIO_OVERRIDE_KEY)
+  AUDIO_BASE = resolveAudioBase()
+  AUDIO_OFFER_URL = `${AUDIO_BASE}/v1/voice/offer`
+  console.info(`[nandi] audio server → ${AUDIO_BASE}`)
+  return AUDIO_BASE
+}
+
 // Make the target obvious in the console — the whole class of bug above comes
 // from not knowing which backend you are actually talking to.
 console.info(
-  `[nandi] API ${API_BASE} (${import.meta.env.DEV ? 'dev' : 'production'} build)`
+  `[nandi] API ${API_BASE} · audio ${AUDIO_BASE} (${import.meta.env.DEV ? 'dev' : 'production'} build)`
 )

@@ -21,6 +21,7 @@ function Line({ m }) {
         <b className="tr__who tr__who--user">You</b>
         <span className="tr__text tr__text--user">
           {m.text}
+          {m.voice && <span className="tr__via" title="Said in voice mode">voice</span>}
           {m.attachments?.map((a, i) => (
             <button key={i} type="button" className="tr__tag tr__tag--link" title="Download"
               onClick={() => downloadFile(a.file_id, a.filename).catch(err => console.warn('[files] download failed', err))}>
@@ -36,6 +37,7 @@ function Line({ m }) {
       <>
         <b className="tr__who">Nandi</b>
         <span className="tr__text">
+          {m.voice && <span className="tr__via tr__via--lead" title="Said in voice mode">voice</span>}
           {m.thinking ? <i className="msg__thinking">{m.progress || 'Thinking…'}</i>
             : m.isError && !m.fromServer ? <span className="msg__error-text">{m.text}</span>
             : <div className={m.isError ? 'msg__error-text' : undefined}><Markdown>{m.text}</Markdown></div>}

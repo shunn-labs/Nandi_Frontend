@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect, forwardRef, useImperativeHandle } from 'react'
 import Attachment from './Attachment.jsx'
-import { IconPaperclip, IconMic, IconSend } from './Icons.jsx'
+import { IconPaperclip, IconMic, IconSend, IconVoice } from './Icons.jsx'
 import { startRecording, stopRecording, isRecording } from '../lib/audioRecorder.js'
 import { stop as stopTts, getIsPlaying } from '../lib/ttsPlayer.js'
 
@@ -12,12 +12,15 @@ import { stop as stopTts, getIsPlaying } from '../lib/ttsPlayer.js'
  *
  * onMicVolume(level)        mic level while recording, for the core
  * onRecordingChange(bool)   so the core can show it is listening
+ * onVoiceMode()             opens voice mode (a live spoken conversation); the
+ *                           mic button is one-shot dictation into this bar
  * ref: focus(), toggleMic()
  */
 const ChatInput = forwardRef(function ChatInput({
   onSend,
   onMicVolume,
   onRecordingChange,
+  onVoiceMode,
 }, ref) {
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState([])
@@ -102,12 +105,14 @@ const ChatInput = forwardRef(function ChatInput({
         err?.name === 'NotAllowedError' || /permission/i.test(err?.message || '')
       const noDevice = err?.name === 'NotFoundError'
 
+      // transcribe() says in words what failed (session expired, speech
+      // service down, server unreachable); anything else gets the raw reason.
       setMicError(
         denied
           ? 'Microphone blocked. Allow mic access for this site, then try again.'
           : noDevice
             ? 'No microphone found.'
-            : `Could not transcribe: ${err?.message || 'unknown error'}`
+            : err?.userMessage || `Could not transcribe: ${err?.message || 'unknown error'}`
       )
     }
   }
@@ -166,6 +171,20 @@ const ChatInput = forwardRef(function ChatInput({
           onKeyDown={handleKeyDown}
           rows={1}
         />
+
+        {/* Voice mode: a live, spoken conversation. Not while dictating: the
+            two would fight over the microphone. */}
+        {onVoiceMode && (
+          <button
+            className="chat-input-bar__icon-btn"
+            title="Voice mode — talk with Nandi"
+            aria-label="Voice mode"
+            onClick={onVoiceMode}
+            disabled={recording}
+          >
+            <IconVoice size={16} />
+          </button>
+        )}
 
         <button
           className="chat-input-bar__icon-btn"

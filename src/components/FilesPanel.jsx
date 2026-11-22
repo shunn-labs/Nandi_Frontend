@@ -20,9 +20,10 @@ const when = (iso) => {
 
 /**
  * Nandi's files: everything that reached Nandi (uploads, camera frames,
- * phone/PC screenshots), newest first. Each can be shown on this
- * or another of your screens, downloaded, shared as a link, sent on WhatsApp,
- * kept (automatic captures are deleted after 7 days otherwise) or deleted.
+ * phone/PC screenshots, recordings, a job's results), newest first. Each can
+ * be shown on this or another of your screens, downloaded, shared as a link,
+ * sent on WhatsApp or by email or to the PC, phone or tablet, kept (automatic
+ * captures are deleted after 7 days otherwise) or deleted.
  *
  * active  the tab is visible: (re)load then, not while folded.
  */
@@ -138,11 +139,20 @@ export default function FilesPanel({ active }) {
   )
 }
 
-/** Send one file to another of your screens, or on WhatsApp. */
+// Fixed places a file can go, besides another open screen ("client:<id>").
+// An empty WhatsApp number or email address means your own (the brain's
+// NANDI_OWNER_WHATSAPP / NANDI_OWNER_EMAIL).
+const TARGETS = [
+  ['whatsapp', 'WhatsApp'], ['email', 'Email'], ['pc', 'PC'], ['android:phone', 'Phone'], ['android:tab', 'Tablet'],
+]
+
+/** Send one file on WhatsApp, by email, to the PC, phone or tablet, or to another open screen. */
 function SendForm({ file, onDone }) {
   const [clients, setClients] = useState([])
   const [target, setTarget] = useState('whatsapp')
   const [number, setNumber] = useState('')
+  const [email, setEmail] = useState('')
+  const [subject, setSubject] = useState('')
   const [caption, setCaption] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -153,14 +163,25 @@ function SendForm({ file, onDone }) {
       .catch(() => setClients([]))
   }, [])
 
+  // What the brain's POST /api/files/{id}/deliver takes as `target`.
+  const deliveryTarget = () => {
+    switch (target) {
+      case 'whatsapp': return { type: 'whatsapp', chat_id: number.trim(), caption }
+      case 'email': return { type: 'email', email: email.trim(), subject: subject.trim(), caption }
+      case 'pc': return { type: 'pc' }
+      case 'android:phone': return { type: 'android', device: 'phone' }
+      case 'android:tab': return { type: 'android', device: 'tab' }
+      default: return { type: 'client', client_id: target.replace(/^client:/, '') }
+    }
+  }
+
   const submit = async (e) => {
     e.preventDefault()
     setBusy(true)
     setError('')
     try {
-      const res = target === 'whatsapp'
-        ? await deliverFile(file.file_id, { type: 'whatsapp', chat_id: number.trim(), caption })
-        : await deliverFile(file.file_id, { type: 'client', client_id: target })
+      // A refusal (the brain answers 422) rejects with the brain's own message.
+      const res = await deliverFile(file.file_id, deliveryTarget())
       onDone(`${file.filename}: ${res.message}`)
     } catch (err) {
       setError(err.message)
@@ -169,20 +190,26 @@ function SendForm({ file, onDone }) {
     }
   }
 
-  const whatsapp = target === 'whatsapp'
   return (
     <form className="devices__stream files__send" onSubmit={submit}>
-      <select value={target} onChange={(e) => setTarget(e.target.value)} aria-label="Send to">
-        <option value="whatsapp">WhatsApp</option>
-        {clients.map(c => <option key={c.client_id} value={c.client_id}>Screen: {c.device_name}</option>)}
+      <select value={target} onChange={(e) => { setTarget(e.target.value); setError('') }} aria-label="Send to">
+        {TARGETS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        {clients.map(c => <option key={c.client_id} value={`client:${c.client_id}`}>Screen: {c.device_name}</option>)}
       </select>
-      {whatsapp && (
+      {target === 'whatsapp' && (
         <>
-          <input value={number} onChange={(e) => setNumber(e.target.value)} placeholder="Number with country code, e.g. 919876543210" aria-label="WhatsApp number" required />
+          <input value={number} onChange={(e) => setNumber(e.target.value)} placeholder="Country code + number (empty = to me)" aria-label="WhatsApp number" />
           <input value={caption} onChange={(e) => setCaption(e.target.value)} placeholder="Message (optional)" aria-label="Caption" />
         </>
       )}
-      <button className="devices__btn" type="submit" disabled={busy || (whatsapp && !number.trim())}>{busy ? 'Sending…' : 'Send'}</button>
+      {target === 'email' && (
+        <>
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email (empty = to me)" aria-label="Email address" />
+          <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject (optional)" aria-label="Subject" />
+          <input value={caption} onChange={(e) => setCaption(e.target.value)} placeholder="Message (optional)" aria-label="Message" />
+        </>
+      )}
+      <button className="devices__btn" type="submit" disabled={busy}>{busy ? 'Sending…' : 'Send'}</button>
       {error && <span className="cams__error files__inline-error">{error}</span>}
     </form>
   )

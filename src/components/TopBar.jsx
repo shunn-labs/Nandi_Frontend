@@ -29,8 +29,10 @@ const SCHEME_ICON = {
  * switch (match system / light / dark) and one menu.
  *
  * menuItems  [{ label, hint, onSelect }]; a `null` entry draws a divider
+ * notice     optional { label, title, onClick }: a pill that stays visible
+ *            while something needs to be (this device's mic is being shared)
  */
-export default function TopBar({ coreState, menuItems, scheme, onScheme }) {
+export default function TopBar({ coreState, menuItems, scheme, onScheme, notice }) {
   const time = useClock()
   const [open, setOpen] = useState(false)
   const menuRef = useRef(null)
@@ -56,6 +58,11 @@ export default function TopBar({ coreState, menuItems, scheme, onScheme }) {
         <span className={`topbar__dot topbar__dot--${coreState}`} title={label} aria-label={label} role="status" />
       </div>
       <div className="topbar__right" ref={menuRef}>
+        {notice && (
+          <button className="topbar__notice" onClick={notice.onClick} title={notice.title}>
+            <i aria-hidden="true" />{notice.label}
+          </button>
+        )}
         <span className="topbar__clock">{time}</span>
         <div className="seg" role="group" aria-label="Appearance">
           {Object.entries(SCHEMES).map(([key, label]) => (
