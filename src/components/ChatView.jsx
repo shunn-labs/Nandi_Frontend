@@ -16,7 +16,7 @@ import ProblemList from './ProblemList.jsx'
 import PromptCard from './PromptCard.jsx'
 import PlanCard from './PlanCard.jsx'
 import NotificationCard from './NotificationCard.jsx'
-import { applyActivity } from './ActivityCard.jsx'
+import ActivityCard, { applyActivity } from './ActivityCard.jsx'
 import useVisionBoxes from '../hooks/useVisionBoxes.js'
 import {
   ensureConnection,
@@ -72,6 +72,10 @@ const REPLY_TIMEOUT_MS = 90000
 
 // Answered prompts stay on screen this long, so their outcome can be read.
 const DONE_PROMPT_MS = 4000
+
+// A job's card stays on the stage this long after the job ends, so "Done" and
+// its summary are seen (it stays in the console's Activity tab).
+const DONE_JOB_MS = 60000
 
 // Only the newest long answers keep a card; older ones live in the transcript.
 const MAX_ANSWER_CARDS = 3
@@ -596,6 +600,15 @@ export default function ChatView({ onLogout }) {
             ? <PlanCard msg={m} onAnswer={handlePromptAnswer} onChange={handlePlanChange} />
             : <PromptCard msg={m} onAnswer={handlePromptAnswer} />,
         })
+      } else if (m.role === 'activity' && m.source === 'job') {
+        // A job's live card (contract C5). Other activities stay in the
+        // console's Activity tab and the pill under the core.
+        const running = m.state !== 'done'
+        list.push({
+          id: m.id, at: m.ts, title: 'Job',
+          source: !running ? 'finished' : m.total > 0 ? `working · ${m.progress || 0} of ${m.total}` : 'working',
+          content: <ActivityCard item={m} onStop={handleStopTask} />,
+        })
       } else if (m.role === 'notification' && (m.fileIds.length > 0 || needsPanel(m.body, []))) {
         list.push({
           id: m.id, at: m.ts, title: m.title, alert: m.level === 'error',
@@ -616,13 +629,26 @@ export default function ChatView({ onLogout }) {
       }
     }
     return list.sort((a, b) => b.at - a.at)
-  }, [vision.boxes, aspects, messages, hidden, handleVisionCapture, handlePromptAnswer, handlePlanChange, setAspect])
+  }, [vision.boxes, aspects, messages, hidden, handleVisionCapture, handlePromptAnswer, handlePlanChange, handleStopTask, setAspect])
 
   // Answered prompts leave the screen after a moment (they stay in the transcript).
   useEffect(() => {
     const done = messages.filter(m => m.role === 'prompt' && !isOpenPrompt(m) && !hidden.has(m.id))
     if (!done.length) return undefined
     const t = setTimeout(() => setHidden(prev => new Set([...prev, ...done.map(m => m.id)])), DONE_PROMPT_MS)
+    return () => clearTimeout(t)
+  }, [messages, hidden])
+
+  // A finished job's card leaves DONE_JOB_MS after it ended. Counted from when
+  // it ended (applyActivity's doneAt), so later messages do not keep it up.
+  useEffect(() => {
+    const done = messages.filter(m => m.role === 'activity' && m.source === 'job' && m.state === 'done' && !hidden.has(m.id))
+    if (!done.length) return undefined
+    const due = (m) => (m.doneAt || 0) + DONE_JOB_MS
+    const first = Math.min(...done.map(due))
+    const t = setTimeout(() => {
+      setHidden(prev => new Set([...prev, ...done.filter(m => due(m) <= first).map(m => m.id)]))
+    }, Math.max(0, first - Date.now()))
     return () => clearTimeout(t)
   }, [messages, hidden])
 
