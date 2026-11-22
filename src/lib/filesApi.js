@@ -23,8 +23,11 @@ async function request(path, { method = 'GET', body } = {}) {
   let data = null
   try { data = await res.json() } catch { /* empty or non-JSON body */ }
   if (!res.ok) {
+    // The brain's own refusals carry `message` (a delivery that failed is a 422
+    // with the reason); FastAPI's validation errors carry a `detail` list.
     const detail = data?.message || data?.detail || res.statusText
-    throw new Error(typeof detail === 'string' ? detail : `Request failed (${res.status})`)
+    const text = Array.isArray(detail) ? detail.map(d => d?.msg).filter(Boolean).join('; ') : detail
+    throw new Error(typeof text === 'string' && text ? text : `Request failed (${res.status})`)
   }
   return data
 }
@@ -59,8 +62,11 @@ export async function fileLink(id, ttlSeconds) {
 
 /**
  * Ask the brain to send a file somewhere:
- *   { type: 'client', client_id }   a device of yours (or { type: 'client', all: true })
- *   { type: 'whatsapp', chat_id, caption }
+ *   { type: 'client', client_id }   a screen of yours (or { type: 'client', all: true })
+ *   { type: 'whatsapp', chat_id, caption }        chat_id '' = your own number
+ *   { type: 'email', email, subject, caption }    email '' = your own address
+ *   { type: 'pc' }                                saved on the PC
+ *   { type: 'android', device: 'phone' | 'tab' }  downloaded on the phone or tablet
  * Resolves to the brain's result ({ ok, message, ... }); a refusal rejects
  * with its reason.
  */
@@ -100,6 +106,7 @@ export function humanSize(n) {
 
 export const SOURCE_LABEL = {
   chat_upload: 'upload', vision: 'camera', android: 'phone', ubuntu: 'PC', mcp: 'tool',
+  audio: 'recording', job: 'job', device: 'device',
 }
 
 // ── Scheduled tasks (Brain: manager/scheduler.py, api/tasks.py) ──────────
