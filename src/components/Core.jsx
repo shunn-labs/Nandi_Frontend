@@ -1,34 +1,44 @@
 import React, { useEffect, useRef } from 'react'
 
 /**
- * The living core: a sphere of dots drawn on a canvas that fills the voice
- * column. It shows what Nandi is doing without any text or lines:
+ * The living core: a sphere of dots drawn on a canvas that covers the main
+ * area. It shows what Nandi is doing without any text or lines:
  *
  *   idle       slow rotation, gentle breathing
- *   listening  opens up and brightens; ripples run inward with the mic level
- *   speaking   ripples run outward with the voice level
+ *   speaking   ripples run outward with Nandi's voice level
  *   thinking   the dots swirl, the centre faster than the edge
  *   working    a few dots break away and orbit
  *   needs      the theme's attention colour, pulsing slowly (a prompt is open)
  *   offline    grey, dim and nearly still
+ *
+ * It moves only for Nandi. While the user talks it stays in its calm idle
+ * motion — their voice is drawn as a dotted wave in the chat bar (MicWave),
+ * not here. (`listening` is kept as a state name for old callers and looks
+ * exactly like idle.)
  *
  * Colours come from the theme's CSS variables (--acc-rgb, --needs-rgb, --glow),
  * so light and dark and every accent just work.
  *
  * Props:
  *   state         a key of CORE_STATES
- *   hasCards      cards are on screen: the core sits higher in its column, or
- *                 shrinks to the top on narrow screens where the cards cover it
- *   large         ambient mode: a bigger core
- *   amplitudeRef  ref holding the current mic / voice level (0..1). A ref, so
+ *   mode          where it sits:
+ *                   center       nothing on the stage: in the middle
+ *                   dock         windows on the stage: small, in the dock slot
+ *                                right of the chat bar (dockRef)
+ *                   narrow-dock  the same on a phone (the slot is left of the bar)
+ *                   ambient      bigger, in the middle
+ *   dockRef       the element whose box the core sits in when docked. Its
+ *                 rect is measured on resize, never per frame.
+ *   amplitudeRef  ref holding Nandi's current voice level (0..1). A ref, so
  *                 60 level updates a second don't re-render React.
- *   anchorRefs    elements kept just under the core (hint, job pill); their
- *                 `top` is set here as the core moves
- *   onActivate    called when the core itself is clicked
+ *   anchorRefs    elements kept just under the core in the middle (hint, job
+ *                 pill); their `top` is set here as the core moves
+ *   onActivate    called when the core itself is clicked (centre / ambient;
+ *                 when docked the slot is a button of its own)
  */
 export const CORE_STATES = {
   idle:      { label: 'Standing by',       spin: 0.12 },
-  listening: { label: 'Listening',         spin: 0.2 },
+  listening: { label: 'Listening',         spin: 0.12 },
   speaking:  { label: 'Speaking',          spin: 0.18 },
   thinking:  { label: 'Thinking',          spin: 0.9 },
   working:   { label: 'Working',           spin: 0.35 },
@@ -38,8 +48,13 @@ export const CORE_STATES = {
 
 const TAU = Math.PI * 2
 const OFFLINE_RGB = [128, 138, 152]
-const NARROW_PX = 820
 const POINTS = fibonacciSphere(560)
+// A docked core is a few dozen pixels across: 560 dots would merge into a
+// blob, and skipping every other one of them leaves spiral stripes. Smaller
+// spheres of their own stay evenly spread.
+const POINTS_SMALL = fibonacciSphere(170)
+const POINTS_MID = fibonacciSphere(300)
+const DOCKED = new Set(['dock', 'narrow-dock'])
 
 function fibonacciSphere(n) {
   const pts = []
@@ -67,12 +82,12 @@ function readColours() {
   }
 }
 
-export default function Core({ state, hasCards, large, amplitudeRef, anchorRefs, onActivate }) {
+export default function Core({ state, mode = 'center', dockRef, amplitudeRef, anchorRefs, onActivate }) {
   const canvasRef = useRef(null)
   // Everything the animation loop reads lives in refs, so props can change
   // without restarting the loop.
   const propsRef = useRef({})
-  propsRef.current = { state, hasCards, large, amplitudeRef, anchorRefs }
+  propsRef.current = { state, mode, dockRef, amplitudeRef, anchorRefs }
   const geomRef = useRef({ x: 0, y: 0, r: 0 })
 
   useEffect(() => {
@@ -81,9 +96,16 @@ export default function Core({ state, hasCards, large, amplitudeRef, anchorRefs,
     const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
     const sim = { t: 0, rot: 0, spin: 0.12, level: 0, swirl: 0, col: null, init: false, x: 0, y: 0, r: 0 }
     let colours = readColours()
-    let w = 0, h = 0, dpr = 1, raf = 0, last = performance.now(), anchorTop = null
+    let w = 0, h = 0, dpr = 1, raf = 0, last = performance.now()
+    // Resizing the backing store clears the canvas. Done from the observer it
+    // landed after the frame had drawn, so the core flashed blank on every
+    // resize (every frame of a layout transition). Flag it; the frame applies
+    // it and draws straight after.
+    let needsResize = true
+    // The dock slot's centre and size relative to the canvas, re-measured only
+    // when something could have moved it — never per frame.
+    let slot = null, slotDirty = true, lastMode = ''
 
-    // Re-read the theme's colours whenever the accent or light/dark changes.
     const themeWatch = new MutationObserver(() => { colours = readColours() })
     themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ['data-palette', 'data-scheme'] })
 
@@ -93,13 +115,28 @@ export default function Core({ state, hasCards, large, amplitudeRef, anchorRefs,
       w = rect.width; h = rect.height
       canvas.width = Math.round(w * dpr)
       canvas.height = Math.round(h * dpr)
+      needsResize = false
     }
-    const ro = new ResizeObserver(resize)
+    const measureSlot = () => {
+      slotDirty = false
+      const el = propsRef.current.dockRef?.current
+      if (!el) { slot = null; return }
+      const c = canvas.getBoundingClientRect()
+      const s = el.getBoundingClientRect()
+      slot = s.width && s.height
+        ? { x: s.left - c.left + s.width / 2, y: s.top - c.top + s.height / 2, w: s.width, h: s.height }
+        : null
+    }
+    const dirty = () => { needsResize = true; slotDirty = true }
+    const ro = new ResizeObserver(dirty)
     ro.observe(canvas)
-    resize()
+    const watchedSlot = propsRef.current.dockRef?.current
+    if (watchedSlot) ro.observe(watchedSlot)
+    window.addEventListener('resize', dirty)
 
     const frame = (now) => {
       raf = requestAnimationFrame(frame)
+      if (needsResize) resize()
       if (!w || !h) return
       const dt = Math.min(0.05, (now - last) / 1000)
       last = now
@@ -107,12 +144,13 @@ export default function Core({ state, hasCards, large, amplitudeRef, anchorRefs,
       const st = CORE_STATES[p.state] ? p.state : 'idle'
       const k = 1 - Math.exp(-dt * 4.5)
       const speed = reduceMotion ? 0.3 : 1
+      if (p.mode !== lastMode) { lastMode = p.mode; slotDirty = true }
+      if (slotDirty && DOCKED.has(p.mode)) measureSlot()
 
       // Where the core should be.
       let tx = w / 2, ty, tr
-      if (p.large) { ty = h * 0.4; tr = clamp(Math.min(w, h) * 0.17, 60, 140) }
-      else if (p.hasCards && window.innerWidth <= NARROW_PX) { ty = 46; tr = 24 }
-      else if (p.hasCards) { ty = h * 0.36; tr = clamp(Math.min(w, h) * 0.24, 56, 104) }
+      if (p.mode === 'ambient') { ty = h * 0.4; tr = clamp(Math.min(w, h) * 0.17, 60, 140) }
+      else if (DOCKED.has(p.mode) && slot) { tx = slot.x; ty = slot.y; tr = Math.max(10, Math.min(slot.w, slot.h) * 0.34) }
       else { ty = h * 0.42; tr = clamp(Math.min(w, h) * 0.15, 56, 126) }
       if (!sim.init) Object.assign(sim, { x: tx, y: ty, r: tr, init: true })
       sim.x += (tx - sim.x) * k; sim.y += (ty - sim.y) * k; sim.r += (tr - sim.r) * k
@@ -126,23 +164,33 @@ export default function Core({ state, hasCards, large, amplitudeRef, anchorRefs,
       sim.spin += (CORE_STATES[st].spin - sim.spin) * k
       sim.rot += dt * sim.spin * speed
       sim.swirl += ((st === 'thinking' ? 1 : 0) - sim.swirl) * k
-      const level = st === 'listening' || st === 'speaking' ? Math.min(1, p.amplitudeRef?.current || 0) : 0
+      // Only Nandi's voice moves it.
+      const level = st === 'speaking' ? Math.min(1, p.amplitudeRef?.current || 0) : 0
       sim.level += (level - sim.level) * (1 - Math.exp(-dt * 16))
 
       const R = draw(ctx, dpr, w, h, sim, st, colours.glow)
 
-      // Keep the hint and job pill just under the core.
-      const top = Math.round(sim.y + R * 1.5 + 18)
-      if (top !== anchorTop) {
-        anchorTop = top
-        for (const ref of p.anchorRefs || []) if (ref.current) ref.current.style.top = `${top}px`
+      // Keep the hint and job pill just under the core while it is in the
+      // middle. Compared with the element's own value, so one that was just
+      // mounted (the hint comes and goes) gets its place on the next frame.
+      if (!DOCKED.has(p.mode)) {
+        const top = `${Math.round(sim.y + R * 1.5 + 18)}px`
+        for (const ref of p.anchorRefs || []) {
+          if (ref.current && ref.current.style.top !== top) ref.current.style.top = top
+        }
       }
     }
     raf = requestAnimationFrame(frame)
-    return () => { cancelAnimationFrame(raf); ro.disconnect(); themeWatch.disconnect() }
+    return () => {
+      cancelAnimationFrame(raf)
+      ro.disconnect()
+      themeWatch.disconnect()
+      window.removeEventListener('resize', dirty)
+    }
   }, [])
 
   const handlePointerDown = (e) => {
+    if (DOCKED.has(mode)) return
     const { x, y, r } = geomRef.current
     const rect = e.currentTarget.getBoundingClientRect()
     if (Math.hypot(e.clientX - rect.left - x, e.clientY - rect.top - y) < r * 1.4) onActivate?.()
@@ -151,7 +199,7 @@ export default function Core({ state, hasCards, large, amplitudeRef, anchorRefs,
   return (
     <canvas
       ref={canvasRef}
-      className="core"
+      className={`core core--${mode}`}
       onPointerDown={handlePointerDown}
       aria-label={`Nandi: ${(CORE_STATES[state] || CORE_STATES.idle).label}. Click the core to talk.`}
       role="img"
@@ -169,9 +217,8 @@ function draw(ctx, dpr, w, h, sim, st, glow) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.clearRect(0, 0, w, h)
 
-  if (st === 'listening') R *= 1.06 + level * 0.06
-  else if (st === 'needs') R *= 1 + 0.035 * Math.sin(sim.t * 3.2)
-  else if (st === 'idle') R *= 1 + 0.018 * Math.sin(sim.t * 1.1)
+  if (st === 'needs') R *= 1 + 0.035 * Math.sin(sim.t * 3.2)
+  else if (st === 'idle' || st === 'listening') R *= 1 + 0.018 * Math.sin(sim.t * 1.1)
 
   // soft glow, no edges
   const gr = ctx.createRadialGradient(x, y, R * 0.1, x, y, R * 2.3)
@@ -181,8 +228,9 @@ function draw(ctx, dpr, w, h, sim, st, glow) {
   ctx.beginPath(); ctx.arc(x, y, R * 2.3, 0, TAU); ctx.fill()
 
   const cr = Math.cos(sim.rot), sr = Math.sin(sim.rot), ct = Math.cos(0.32), stl = Math.sin(0.32)
-  const dotScale = 0.55 + 0.45 * (R / 80)
-  for (const p of POINTS) {
+  const dotScale = 0.55 + 0.45 * Math.min(1, R / 80)
+  const points = R < 30 ? POINTS_SMALL : R < 50 ? POINTS_MID : POINTS
+  for (const p of points) {
     let X = p.x * cr - p.z * sr
     const Z = p.x * sr + p.z * cr
     let Y = p.y * ct - Z * stl
@@ -196,12 +244,11 @@ function draw(ctx, dpr, w, h, sim, st, glow) {
     const rho = Math.min(1, Math.hypot(X, Y))
     let d = 1
     if (st === 'speaking') d += level * (0.06 + 0.2 * Math.max(0, Math.sin(rho * 11 - sim.t * 10))) * (0.35 + 0.65 * rho)
-    else if (st === 'listening') d += level * 0.16 * Math.sin(rho * 9 + sim.t * 8) * rho - 0.02
     else if (st === 'thinking') d -= 0.08 * (0.5 + 0.5 * Math.sin(sim.t * 3 + p.seed))
     else d += 0.012 * Math.sin(p.seed + sim.t * 1.4)
     const depth = (Z2 + 1) / 2
     const size = (0.55 + 1.35 * depth) * dotScale * (st === 'speaking' ? 1 + level * 0.5 * rho : 1)
-    const a = (0.12 + 0.78 * depth) * alpha * (st === 'listening' ? 0.85 + level * 0.3 : 1)
+    const a = (0.12 + 0.78 * depth) * alpha
     ctx.fillStyle = rgba(Math.min(1, a))
     ctx.beginPath(); ctx.arc(x + X * R * d, y + Y * R * d, size, 0, TAU); ctx.fill()
   }
