@@ -1,7 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { memo, useEffect, useRef, useState } from 'react'
 import { startConsumer } from '../lib/webrtcConsumer.js'
-import { absoluteUrl, downloadFile, humanSize, SOURCE_LABEL } from '../lib/filesApi.js'
+import { downloadFile } from '../lib/filesApi.js'
 import AudioBox from './AudioBox.jsx'
+import FileViewer from './FileViewer.jsx'
 
 /**
  * VisionBox — the picture inside a vision panel on the stage. The panel around
@@ -10,7 +11,8 @@ import AudioBox from './AudioBox.jsx'
  * box.type === 'stream'  → WebRTC consumer with auto-reconnect + manual refresh
  * box.type === 'frame'   → static base64 image (box.mime, JPEG if unset)
  * box.type === 'camera'  → local producer preview (uses producer ref for switching)
- * box.type === 'file'    → a file from Nandi's file store (FileBox: play or download)
+ * box.type === 'file'    → a file from Nandi's file store (FileViewer: picture, video,
+ *                          PDF, text, table, document preview…)
  * box.type === 'audio'         → a clip from the audio server (AudioBox)
  * box.type === 'audio_stream'  → a live mic from the audio server (AudioBox)
  *
@@ -22,45 +24,21 @@ import AudioBox from './AudioBox.jsx'
  *   ⤓  Save    — download the frame from Nandi's files (frames the brain stored)
  *   (Closing is the panel's job.)
  *
- * onAspect(width / height) reports the media's real shape once it is known
- * (and again if a stream changes resolution), so the panel can take that
- * shape instead of letterboxing the picture.
+ * onAspect(boxId, width / height) reports the media's real shape once it is
+ * known (and again if a stream changes resolution), so the window can take
+ * that shape instead of letterboxing the picture. It takes the box id, so the
+ * parent can pass one stable function for every box (memo stays effective).
  */
-export default function VisionBox({ box, onCapture, onAspect }) {
-  if (box.type === 'file') return <FileBox box={box} />
+function VisionBox({ box, onCapture, onAspect }) {
+  const aspect = (r) => onAspect?.(box.id, r)
+  if (box.type === 'file') return <FileViewer box={box} onAspect={aspect} />
   // Audio has nothing to capture and no picture, so it is its own component
   // rather than more branches in MediaBox (and its hooks).
   if (box.type === 'audio' || box.type === 'audio_stream') return <AudioBox box={box} />
-  return <MediaBox box={box} onCapture={onCapture} onAspect={onAspect} />
+  return <MediaBox box={box} onCapture={onCapture} onAspect={aspect} />
 }
 
-/** A non-image file the brain showed: audio and video play in place, anything else downloads. */
-function FileBox({ box }) {
-  const f = box.file || {}
-  const [error, setError] = useState('')
-  const url = absoluteUrl(box.url)
-  const kind = f.kind || ''
-  const save = async () => {
-    setError('')
-    try { await downloadFile(f.file_id, f.filename) } catch (err) { setError(err.message) }
-  }
-  return (
-    <div className="fbox">
-      {kind === 'audio' && url && <audio className="fbox__player" controls preload="metadata" src={url} />}
-      {kind === 'video' && url && <video className="fbox__player" controls preload="metadata" playsInline src={url} />}
-      <div className="fbox__meta">
-        <b className="fbox__name" title={f.filename}>{f.filename || box.label}</b>
-        <span>{[kind || 'file', humanSize(f.size), SOURCE_LABEL[f.source] || f.source].filter(Boolean).join(' · ')}</span>
-        {f.caption && <span className="fbox__caption">{f.caption}</span>}
-      </div>
-      <div className="fbox__actions">
-        <button className="devices__btn" onClick={save} disabled={!f.file_id}>Download</button>
-        {url && <a className="devices__btn fbox__link" href={url} target="_blank" rel="noreferrer">Open</a>}
-      </div>
-      {error && <div className="cams__error">{error}</div>}
-    </div>
-  )
-}
+export default memo(VisionBox)
 
 function MediaBox({ box, onCapture, onAspect }) {
   const videoRef = useRef(null)
@@ -191,6 +169,11 @@ function MediaBox({ box, onCapture, onAspect }) {
     if (w > 0 && h > 0) onAspect?.(w / h)
   }
 
+  // Rebuilt only when the frame changes, not on every render of the window.
+  const frameSrc = React.useMemo(
+    () => (box.type === 'frame' ? `data:${box.mime || 'image/jpeg'};base64,${box.imageB64}` : ''),
+    [box.type, box.mime, box.imageB64])
+
   const facingLabel = box.type === 'camera' && box.producer
     ? (box.producer.getFacingMode() === 'environment' ? 'back' : 'front')
     : null
@@ -200,7 +183,7 @@ function MediaBox({ box, onCapture, onAspect }) {
       {box.type === 'frame' ? (
         <img
           className="vbox__media"
-          src={`data:${box.mime || 'image/jpeg'};base64,${box.imageB64}`}
+          src={frameSrc}
           alt={box.label}
           draggable={false}
           onLoad={(e) => reportAspect(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}

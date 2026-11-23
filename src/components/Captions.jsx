@@ -1,31 +1,36 @@
-import React, { useEffect, useState } from 'react'
+import React, { memo, useEffect, useState } from 'react'
 import Markdown from './Markdown.jsx'
 
 const FADE_AFTER_MS = 8000
 
 /**
- * Subtitles at the bottom of the stage: what you last said, and Nandi's reply.
- * A long reply opens as a panel instead, so here it is cut to its first
- * sentence. They fade out a while after the reply, unless `hold` is set (Nandi
- * is still thinking or speaking).
+ * Subtitles: what you last said, and Nandi's reply. A long reply opens as a
+ * window instead, so here it is cut to its first sentence.
+ *
+ * In the middle (nothing on the stage) they fade out a while after the reply,
+ * unless `hold` is set (Nandi is still thinking or speaking).
+ *
+ * Docked (windows on the stage) they sit in the bottom dock, right of the
+ * core, as the latest command → response pair: one line for what you said,
+ * at most two for the reply, and they stay until the next exchange.
  *
  * caption  { key, echo, text, isError, short } or null
  */
-export default function Captions({ caption, hold }) {
+function Captions({ caption, hold, docked }) {
   const [shown, setShown] = useState(false)
 
   useEffect(() => {
     if (!caption) return undefined
     setShown(true)
-    if (hold) return undefined
+    if (hold || docked) return undefined
     const t = setTimeout(() => setShown(false), FADE_AFTER_MS)
     return () => clearTimeout(t)
-  }, [caption, hold])
+  }, [caption, hold, docked])
 
   if (!caption) return null
   return (
-    <div className={`captions${shown ? ' captions--on' : ''}`} aria-live="polite">
-      {caption.echo && <div className="captions__echo">{caption.echo}</div>}
+    <div className={`captions${shown || docked ? ' captions--on' : ''}${docked ? ' captions--docked' : ''}`} aria-live="polite">
+      {caption.echo && <div className="captions__echo" title={caption.echo}>{caption.echo}</div>}
       {caption.text && (
         <div className={`captions__text${caption.isError ? ' captions__text--error' : ''}`}>
           {caption.short ? caption.text : <Markdown>{caption.text}</Markdown>}
@@ -34,3 +39,5 @@ export default function Captions({ caption, hold }) {
     </div>
   )
 }
+
+export default memo(Captions)

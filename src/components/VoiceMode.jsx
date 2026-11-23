@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { VoiceSession } from '../lib/voiceSession.js'
 import { getVoiceDuplex, getVoiceLang } from '../lib/voicePrefs.js'
 import { IconMic, IconMicOff, IconSend } from './Icons.jsx'
+import MicWave from './MicWave.jsx'
 
 const STATE_LABEL = {
   idle: 'Voice off',
@@ -14,11 +15,11 @@ const STATE_LABEL = {
 
 const CONNECTED = new Set(['listening', 'thinking', 'speaking'])
 
-// How far each side moves the core. The mic level comes from the transport
-// (already 0..1); Nandi's is a raw RMS, which runs much smaller.
+// The mic level comes from the transport (already 0..1); Nandi's is a raw RMS,
+// which runs much smaller. Nandi's level moves the core; the user's only the
+// dotted wave in this panel — the core stays calm while you talk.
 const MIC_GAIN = 3
 const BOT_GAIN = 4
-const MAX_AMPLITUDE = 1
 
 const ENGINE_DETAIL = { local: 'Nandi’s own GPU', elevenlabs: 'ElevenLabs (cloud)' }
 const NOTICE_MS = 8000
@@ -59,7 +60,7 @@ function hintFor(state, muted) {
  * Props:
  *   onTurn({user, reply, status, typed})  a finished exchange, for the transcript
  *                                         (the browser's chat socket never sees voice turns)
- *   onLevel(amplitude)                    many times a second (0..1), for the core
+ *   onLevel(amplitude)                    Nandi's voice level, many times a second (0..1), for the core
  *   onState(state)                        connecting | listening | thinking | speaking | error
  *   onCaption({user, bot})                what was heard / what Nandi is saying, as it changes
  *   onClose()                             End was pressed
@@ -78,6 +79,7 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
 
   const sessionRef = useRef(null)
   const audioRef = useRef(null)
+  const micLevelRef = useRef(0)
   // The session's callbacks are wired once; read the parent's current ones.
   const handlersRef = useRef({ onTurn, onLevel, onState, onCaption })
   handlersRef.current = { onTurn, onLevel, onState, onCaption }
@@ -91,8 +93,8 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
   }, [notice])
 
   const handleLevels = useCallback(({ mic, bot }) => {
-    const amplitude = Math.min(MAX_AMPLITUDE, Math.max(mic * MIC_GAIN, bot * BOT_GAIN))
-    handlersRef.current.onLevel?.(amplitude)
+    micLevelRef.current = Math.min(1, (mic || 0) * MIC_GAIN)
+    handlersRef.current.onLevel?.(Math.min(1, (bot || 0) * BOT_GAIN))
   }, [])
 
   const start = useCallback(() => {
@@ -162,6 +164,8 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
           <span className="voice-mode__dot" aria-hidden="true" />
           {label}
         </span>
+        {/* Your voice, as a sliding dotted line (the core is Nandi's). */}
+        <MicWave levelRef={micLevelRef} active={connected && !muted} className="voice-mode__wave" />
         {badge && (
           <span
             className={`voice-mode__engine${badge.cloud ? ' voice-mode__engine--cloud' : ''}`}
