@@ -1,5 +1,5 @@
 import React, { memo, useEffect, useRef, useState } from 'react'
-import { startConsumer } from '../lib/webrtcConsumer.js'
+import { startFrameConsumer } from '../lib/visionFrames.js'
 import { downloadFile } from '../lib/filesApi.js'
 import AudioBox from './AudioBox.jsx'
 import FileViewer from './FileViewer.jsx'
@@ -8,7 +8,8 @@ import FileViewer from './FileViewer.jsx'
  * VisionBox — the picture inside a vision panel on the stage. The panel around
  * it carries the title and Close; this draws the media and its own tools.
  *
- * box.type === 'stream'  → WebRTC consumer with auto-reconnect + manual refresh
+ * box.type === 'stream'  → live view: JPEG frames over WebSocket drawn on a
+ *                          canvas (visionFrames.js), auto-reconnect + manual refresh
  * box.type === 'frame'   → static base64 image (box.mime, JPEG if unset)
  * box.type === 'camera'  → local producer preview (uses producer ref for switching)
  * box.type === 'file'    → a file from Nandi's file store (FileViewer: picture, video,
@@ -19,7 +20,7 @@ import FileViewer from './FileViewer.jsx'
  * Buttons:
  *   📸 Capture  — grab current frame as a File and inject into the chat
  *                 attachment strip (same flow as uploading a file)
- *   🔄 Refresh  — re-connect the WebRTC consumer (stream only)
+ *   🔄 Refresh  — re-connect the live view (stream only)
  *   ⤺  Switch  — flip front ↔ back camera (camera only)
  *   ⤓  Save    — download the frame from Nandi's files (frames the brain stored)
  *   (Closing is the panel's job.)
@@ -42,25 +43,36 @@ export default memo(VisionBox)
 
 function MediaBox({ box, onCapture, onAspect }) {
   const videoRef = useRef(null)
+  const canvasRef = useRef(null)
   const consumerRef = useRef(null)
   const [state, setState] = useState(box.type === 'frame' ? 'live' : 'connecting')
   const [, forceRender] = useState(0)
 
-  // ── Stream mode: start consumer with auto-reconnect ──────
+  // ── Stream mode: start the frame consumer with auto-reconnect ──
   useEffect(() => {
     if (box.type !== 'stream') return
 
-    consumerRef.current = startConsumer(box.streamId, {
-      onTrack: (mediaStream) => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = mediaStream
-          setState('live')
+    let lastSize = ''
+    consumerRef.current = startFrameConsumer(box.streamId, {
+      onFrame: (image) => {
+        const canvas = canvasRef.current
+        if (!canvas) { image.close?.(); return }
+        if (canvas.width !== image.width || canvas.height !== image.height) {
+          canvas.width = image.width
+          canvas.height = image.height
+        }
+        canvas.getContext('2d').drawImage(image, 0, 0)
+        image.close?.()
+        const size = `${image.width}x${image.height}`
+        if (size !== lastSize) {
+          lastSize = size
+          reportAspect(image.width, image.height)
         }
       },
       onState: (s) => {
         if (s === 'offline' || s === 'failed' || s === 'disconnected') {
           setState('offline')
-        } else if (s === 'connected') {
+        } else if (s === 'live' || s === 'connected') {
           setState('live')
         } else if (s === 'waiting') {
           // The signalling server has told us there is no producer on this
@@ -128,6 +140,16 @@ function MediaBox({ box, onCapture, onAspect }) {
       return
     }
 
+    if (box.type === 'stream') {
+      // The JPEG exactly as the server sent it — no second encode.
+      const last = consumerRef.current?.getLastFrame?.()
+      if (last?.blob) { finalize(last.blob); return }
+      const shown = canvasRef.current
+      if (!shown || !shown.width) return
+      shown.toBlob(finalize, outType, 0.92)
+      return
+    }
+
     const video = videoRef.current
     if (!video || !video.videoWidth) return
     canvas.width = video.videoWidth
@@ -137,9 +159,8 @@ function MediaBox({ box, onCapture, onAspect }) {
   }
 
   // ── Refresh stream consumer ──
-  // Don't set state here. If the stream is already healthy, refresh() is a
-  // no-op and would otherwise leave the box stuck on "Connecting…". The
-  // consumer reports state changes through onState above.
+  // Don't set state here: the consumer reports 'connecting' and then 'live'
+  // (once a frame is drawn) through onState above.
   const handleRefresh = () => {
     consumerRef.current?.refresh?.()
   }
@@ -188,6 +209,8 @@ function MediaBox({ box, onCapture, onAspect }) {
           draggable={false}
           onLoad={(e) => reportAspect(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
         />
+      ) : box.type === 'stream' ? (
+        <canvas ref={canvasRef} className="vbox__media" />
       ) : (
         <video
           ref={videoRef}
@@ -230,7 +253,7 @@ function MediaBox({ box, onCapture, onAspect }) {
         <div className="vbox__placeholder">
           {state === 'connecting' && 'Connecting…'}
           {state === 'waiting' && 'No producer on this stream yet · waiting…'}
-          {state === 'offline' && 'Producer offline · auto-retrying…'}
+          {state === 'offline' && 'No frames · auto-retrying…'}
           {state === 'failed' && 'Connection failed · retrying…'}
         </div>
       )}
