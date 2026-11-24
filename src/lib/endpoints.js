@@ -74,6 +74,21 @@ export function getVisionApiBase() {
   return getVisionSignalUrl().replace(/^ws/, 'http').replace(/\/ws\/signal\/?$/, '')
 }
 
+/** ws(s) base of the vision server, from the same setting. */
+export function getVisionWsBase() {
+  return getVisionSignalUrl().replace(/\/ws\/signal\/?$/, '')
+}
+
+/** Where this browser's camera frames go (visionFrames.js producer). */
+export function getVisionFramesUrl(streamId) {
+  return `${getVisionWsBase()}/ws/frames/${encodeURIComponent(streamId)}`
+}
+
+/** Where a live view's frames come from (visionFrames.js consumer). */
+export function getVisionViewUrl(streamId) {
+  return `${getVisionWsBase()}/ws/view/${encodeURIComponent(streamId)}`
+}
+
 // ── Nandi Audio Server ──────────────────────────────────────
 // STT (/v1/stt), TTS (/v1/tts), voice conversation over WebRTC (/v1/voice/offer)
 // and live audio streams (/v1/streams). Every endpoint takes the brain JWT the

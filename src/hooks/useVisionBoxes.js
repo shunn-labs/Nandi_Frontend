@@ -6,7 +6,7 @@ import {
   getVisionControlError,
   getMyClientId,
 } from '../lib/visionControl.js'
-import { startProducer } from '../lib/webrtcConsumer.js'
+import { startFrameProducer } from '../lib/visionFrames.js'
 import { absoluteUrl } from '../lib/filesApi.js'
 
 let boxCounter = 0
@@ -193,7 +193,7 @@ export default function useVisionBoxes() {
     setCameraError('')
     const streamId = `${getMyClientId()}_camera`
     try {
-      const producer = await startProducer({
+      const producer = await startFrameProducer({
         streamId,
         facingMode: 'environment',
         callbacks: { onLog: (text, type) => console.log(`[producer] ${text}`, type) },

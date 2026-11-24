@@ -54,20 +54,29 @@ The REST dispatch endpoints (`/api/vision/dispatch/{client_id}/…`) still exist
 for scripts, but require the `x-dispatch-key` header (brain env
 `VISION_DISPATCH_KEY`).
 
-## Vision server signaling URL
+## Vision server URL
 
-The browser consumer connects directly to your vision server's `/ws/signal`. Default is `wss://vision.shunnlabs.in/ws/signal`. To override for dev, run this in the browser console:
+The browser talks to the vision server directly over WebSocket (`src/lib/visionFrames.js`):
+camera frames go up on `/ws/frames/<stream_id>`, live views come down on
+`/ws/view/<stream_id>`. The setting is still called the signaling URL (default
+`wss://vision.shunnlabs.in/ws/signal`); the two paths are derived from it. To
+override for dev, run this in the browser console:
 
 ```js
 localStorage.setItem('nandi_vision_signal_url', 'ws://localhost:8765/ws/signal')
 ```
 
-Then reload.
+Then reload. (`src/lib/webrtcConsumer.js`, the old WebRTC transport, is no
+longer imported: between a browser and the vision server WebRTC ran over UDP
+with no relay, which gave corrupted, downscaled pictures and growing lag.)
 
 ## Camera button behavior
 
 - Click camera icon → asks for camera permission, opens local stream
-- Starts a WebRTC producer with `stream_id = web_react_<device>_camera`
+- Starts a frame producer with `stream_id = web_react_<device>_camera`: JPEG
+  frames over WebSocket, at the rate the server asks for (~1 fps while nothing
+  uses the camera, the view's fps while a live view runs; one full-quality
+  frame on request for snapshots and one-shot analysis)
 - A VisionBox appears in the right column showing the local preview
 - Click the camera icon again, or the box's ✕ button, to stop
 
