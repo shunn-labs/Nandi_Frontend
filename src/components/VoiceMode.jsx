@@ -58,7 +58,8 @@ function hintFor(state, muted) {
  * screen's captions through onCaption; without it the panel shows them itself.
  *
  * Props:
- *   onTurn({user, reply, status, typed})  a finished exchange, for the transcript
+ *   onTurn({user, reply, status, typed})  a finished exchange, for the transcript (`reply` is
+ *                                         the shown answer; only its short line was spoken)
  *                                         (the browser's chat socket never sees voice turns)
  *   onLevel(amplitude)                    Nandi's voice level, many times a second (0..1), for the core
  *   onState(state)                        connecting | listening | thinking | speaking | error

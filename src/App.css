@@ -1619,6 +1619,23 @@ kbd {
 .abox__dot--offline,
 .abox__dot--failed { background: var(--error); }
 .abox__dot--idle { background: var(--text-muted); }
+/* A live mic's level, like the motion in a camera view. */
+.abox__level {
+  position: relative; height: 6px; border-radius: 3px; overflow: hidden;
+  background: var(--bg-raised); border: 1px solid var(--border);
+}
+.abox__level-fill {
+  position: absolute; inset: 0; transform-origin: left center; transform: scaleX(0);
+  background: linear-gradient(90deg, var(--cyan-dim), var(--cyan));
+  transition: transform 60ms linear;
+}
+.abox--live:not(.abox--on-air) .abox__level-fill { background: var(--text-muted); }
+.abox__unblock {
+  align-self: flex-start; padding: 8px 14px; border-radius: var(--radius-md); cursor: pointer;
+  font: inherit; font-size: 13px; font-weight: 600;
+  color: var(--on-cyan); background: var(--cyan); border: 1px solid var(--cyan-edge);
+}
+.abox__unblock:hover { filter: brightness(1.08); }
 
 /* ── Live audio panel (AudioStreamsPanel.jsx) ── */
 .streams-panel__row { gap: 12px; }

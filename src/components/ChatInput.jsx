@@ -3,7 +3,7 @@ import Attachment from './Attachment.jsx'
 import MicWave from './MicWave.jsx'
 import { IconPaperclip, IconMic, IconSend, IconVoice } from './Icons.jsx'
 import { startRecording, stopRecording, cancelRecording } from '../lib/audioRecorder.js'
-import { stop as stopTts, getIsPlaying } from '../lib/ttsPlayer.js'
+import { stopSpeech, isSpeechBusy } from '../lib/speechBus.js'
 
 // The recorder's RMS runs small (speech is ~0.02–0.2); this maps it to 0..1.
 const MIC_GAIN = 5
@@ -18,7 +18,9 @@ const clock = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
  * stops by itself on a pause. While it records, the text box gives way to a
  * dotted wave of your voice, the time, and ✕ to throw the recording away.
  *
- * Typing or starting the mic while Nandi is speaking cuts the voice off.
+ * Typing or starting the mic while Nandi is speaking (or about to) cuts her
+ * voice off — her clips included. The mic button then listens at once; the
+ * globe and Space only stop her (ChatView).
  *
  * onMicPhase(phase)         'idle' | 'recording' | 'transcribing'
  * onVoiceMode()             opens voice mode (a live spoken conversation); the
@@ -104,7 +106,7 @@ const ChatInput = forwardRef(function ChatInput({
   // ── Mic (STT) ───────────────────────────────────────────
   const startMic = async () => {
     if (phaseRef.current !== 'idle') return
-    if (getIsPlaying()) stopTts()
+    if (isSpeechBusy()) stopSpeech()
     setMicError('')
     levelRef.current = 0
     setPhase('recording')
@@ -167,7 +169,7 @@ const ChatInput = forwardRef(function ChatInput({
 
   const handleChange = (e) => {
     // Typing while Nandi talks means you want to cut in.
-    if (getIsPlaying()) stopTts()
+    if (isSpeechBusy()) stopSpeech()
     setText(e.target.value)
   }
 
