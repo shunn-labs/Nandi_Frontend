@@ -16,7 +16,6 @@ import {
 import { THEMES, SCHEMES } from '../lib/themes.js'
 import { isSoundEnabled, setSoundEnabled, playChime } from '../lib/chime.js'
 import { AMBIENT_CHOICES } from '../lib/uiPrefs.js'
-import { googleStatus, googleConnect, googleDisconnect } from '../lib/googleApi.js'
 
 function getDeviceId() {
   const match = document.cookie.match(/(?:^|;\s*)nandi_device_id=([^;]+)/)
@@ -45,103 +44,6 @@ export function Toggle({ value, onChange, label }) {
       }}
     >
       <div className="settings-toggle__knob" />
-    </div>
-  )
-}
-
-const GOOGLE_SERVICES = [
-  { key: 'gmail', label: 'Gmail', note: 'read, send and organise email' },
-  { key: 'drive', label: 'Drive', note: 'find, read, upload and share files' },
-]
-
-/**
- * Settings → Google: connect the user's own Google account so Nandi can use
- * their Gmail and Drive. The brain does the OAuth and keeps the tokens; this
- * shows the status and opens Google's consent popup.
- */
-function GoogleSection() {
-  const [status, setStatus] = useState(null)       // null = loading
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const [wanted, setWanted] = useState({ gmail: true, drive: true })
-
-  const refresh = () => googleStatus()
-    .then((s) => {
-      setStatus(s)
-      if (s.connected && s.services?.length) {
-        setWanted(Object.fromEntries(GOOGLE_SERVICES.map(({ key }) => [key, s.services.includes(key)])))
-      }
-    })
-    .catch((e) => { setStatus({ configured: false, connected: false }); setError(e.message) })
-
-  useEffect(() => { refresh() }, [])
-
-  const connect = async () => {
-    const services = GOOGLE_SERVICES.map((s) => s.key).filter((k) => wanted[k])
-    if (!services.length) { setError('Pick Gmail, Drive or both.'); return }
-    setBusy(true); setError('')
-    try {
-      const result = await googleConnect(services)
-      if (result && !result.ok) setError(`Google: ${result.error || 'not connected'}`)
-      await refresh()
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const disconnect = async () => {
-    if (!window.confirm(`Disconnect ${status?.email || 'Google'} from Nandi?`)) return
-    setBusy(true); setError('')
-    try { await googleDisconnect(); await refresh() } catch (e) { setError(e.message) } finally { setBusy(false) }
-  }
-
-  const services = status?.services || []
-  return (
-    <div>
-      <div className="settings-section__label">Google</div>
-      {status === null ? (
-        <div className="settings-row"><span className="settings-row__label">Checking…</span></div>
-      ) : !status.configured ? (
-        <p className="google-card__note">
-          Gmail and Drive are not set up on this Nandi server yet. The admin needs to add a Google
-          OAuth client (GOOGLE_OAUTH_CLIENT_ID / _SECRET) to the brain.
-        </p>
-      ) : (
-        <>
-          {status.connected && (
-            <div className="settings-row">
-              <span className="settings-row__label">Account</span>
-              <span className="settings-row__value">{status.email || 'connected'}</span>
-            </div>
-          )}
-          {GOOGLE_SERVICES.map(({ key, label, note }) => (
-            <label key={key} className="google-card__service">
-              <input type="checkbox" checked={!!wanted[key]} disabled={busy}
-                onChange={(e) => setWanted((w) => ({ ...w, [key]: e.target.checked }))} />
-              <span>
-                <b>{label}</b>
-                {status.connected && (
-                  <i className={services.includes(key) ? 'google-card__on' : 'google-card__off'}>
-                    {services.includes(key) ? 'on' : 'off'}
-                  </i>
-                )}
-                <small>{note}</small>
-              </span>
-            </label>
-          ))}
-          <div className="google-card__actions">
-            <button className="google-card__btn google-card__btn--primary" onClick={connect} disabled={busy}>
-              {busy ? 'Waiting for Google…' : status.connected ? 'Update access' : 'Connect Google'}
-            </button>
-            {status.connected && (
-              <button className="google-card__btn" onClick={disconnect} disabled={busy}>Disconnect</button>
-            )}
-          </div>
-        </>
-      )}
-      {error && <p className="google-card__error">{error}</p>}
     </div>
   )
 }
@@ -378,8 +280,6 @@ export default function SettingsPanel({
               </div>
             )}
           </div>
-
-          <GoogleSection />
 
           {/* Connection */}
           <div>
