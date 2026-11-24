@@ -719,6 +719,31 @@ body {
 }
 
 
+/* Settings → Google */
+.google-card__note { font-size: 0.82rem; color: var(--text-muted); line-height: 1.5; margin: 8px 0 0; }
+.google-card__service {
+  display: flex; gap: 10px; align-items: flex-start; padding: 10px 0;
+  border-bottom: 1px solid var(--border); cursor: pointer;
+}
+.google-card__service input { margin-top: 3px; accent-color: var(--cyan); }
+.google-card__service span { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.google-card__service b { font-weight: 500; font-size: 0.9rem; color: var(--text-secondary); }
+.google-card__service small { flex-basis: 100%; font-size: 0.78rem; color: var(--text-muted); }
+.google-card__service i { font-style: normal; font-size: 0.7rem; font-family: var(--font-mono);
+  padding: 1px 6px; border-radius: var(--radius-sm); border: 1px solid var(--border); }
+.google-card__on { color: var(--green); border-color: var(--green-dim) !important; }
+.google-card__off { color: var(--text-muted); }
+.google-card__actions { display: flex; gap: 8px; margin-top: 12px; }
+.google-card__btn {
+  flex: 1; padding: 9px 12px; border-radius: var(--radius-md); font-family: var(--font-body);
+  font-size: 0.85rem; cursor: pointer; background: none; color: var(--text-secondary);
+  border: 1px solid var(--border-light); transition: all var(--transition);
+}
+.google-card__btn:hover:not(:disabled) { background: var(--hover); }
+.google-card__btn:disabled { opacity: 0.6; cursor: default; }
+.google-card__btn--primary { background: var(--cyan-soft); border-color: var(--cyan-edge); color: var(--cyan); }
+.google-card__error { font-size: 0.8rem; color: var(--error); margin: 8px 0 0; }
+
 /* Inline mic / STT failure notice above the input bar. */
 .chat-input-error {
   display: flex;
