@@ -1,24 +1,32 @@
 // ═══════════════════════════════════════════════════════════
-//  audioRecorder.js  –  Record + energy-based VAD + STT on the audio server
+//  audioRecorder.js  –  Record (press to start, press to stop) + STT on the audio server
 // ═══════════════════════════════════════════════════════════
+//
+// There is no silence detection any more: a pause to think used to end the
+// recording mid-sentence (1.6 s of quiet, even before the first word). The
+// user decides when they are done — the mic button again, or letting go of
+// Space. A long safety cap still ends a recording someone forgot about.
 
 import { AUDIO_BASE } from './endpoints.js'
 import { audioNetworkError, audioResponseError, authHeaders } from './audioApi.js'
 import { getVoiceLang } from './voicePrefs.js'
 
-const SILENCE_THRESHOLD = 0.015    // RMS below this = silence
-const SILENCE_DURATION  = 1600     // ms of silence before auto-stop
-const MIN_RECORD_TIME   = 600      // ms minimum recording length
+export const MAX_RECORD_MS = 10 * 60 * 1000   // a forgotten mic stops after 10 minutes
 
 let mediaStream    = null
 let mediaRecorder  = null
 let audioContext   = null
 let analyser       = null
 let chunks         = []
-let silenceTimer   = null
-let recordStart    = 0
-let volumeCallback = null          // for orb animation
+let volumeCallback = null          // the mic level, for the bar's dotted wave
 let rafId          = null
+let maxTimer       = null
+// A stop (or cancel) that arrived while the microphone was still opening.
+// Without it, a quick tap of Space — down and up before getUserMedia resolved —
+// was lost, and with no silence detection that recording would never end.
+let opening        = false
+let pendingStop    = false
+let cancelled      = false
 
 // The audio server decodes any container itself, so take the first one this
 // browser can record. Safari has no webm recorder at all — with webm as the
@@ -30,37 +38,18 @@ function pickMimeType() {
   return RECORDING_TYPES.find(t => MediaRecorder.isTypeSupported(t)) || ''
 }
 
-// ── Volume monitoring (feeds orb) ────────────────────────
+// ── Level monitoring (feeds the dotted wave) ─────────────
 
 function monitorVolume() {
   if (!analyser) return
   const data = new Uint8Array(analyser.fftSize)
   analyser.getByteTimeDomainData(data)
-
-  // Compute RMS
   let sum = 0
   for (let i = 0; i < data.length; i++) {
     const v = (data[i] - 128) / 128
     sum += v * v
   }
-  const rms = Math.sqrt(sum / data.length)
-
-  if (volumeCallback) volumeCallback(rms)
-
-  // Silence detection
-  if (rms < SILENCE_THRESHOLD) {
-    if (!silenceTimer) {
-      silenceTimer = setTimeout(() => {
-        if (Date.now() - recordStart > MIN_RECORD_TIME && mediaRecorder?.state === 'recording') {
-          stopRecording()
-        }
-      }, SILENCE_DURATION)
-    }
-  } else {
-    clearTimeout(silenceTimer)
-    silenceTimer = null
-  }
-
+  if (volumeCallback) volumeCallback(Math.sqrt(sum / data.length))
   rafId = requestAnimationFrame(monitorVolume)
 }
 
@@ -69,8 +58,20 @@ function monitorVolume() {
 let resolveRecording = null
 let rejectRecording = null
 
-export function startRecording(onVolume) {
+/**
+ * Records until stopRecording() (then transcribes) or cancelRecording() (then
+ * resolves ''). Resolves with the transcript, '' when nothing was said.
+ *
+ *   onVolume(rms)   the mic level, many times a second
+ *   options.onStop  called when the recording has stopped and transcription
+ *                   starts (not on cancel)
+ *   options.maxMs   safety cap (default 10 minutes)
+ */
+export function startRecording(onVolume, { onStop, maxMs = MAX_RECORD_MS } = {}) {
   volumeCallback = onVolume || null
+  opening = true
+  pendingStop = false
+  cancelled = false
 
   return new Promise(async (resolve, reject) => {
     resolveRecording = resolve
@@ -78,8 +79,15 @@ export function startRecording(onVolume) {
 
     try {
       mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      opening = false
+      if (pendingStop) {
+        // Released before the mic was even open: nothing was said.
+        cleanup()
+        resolve('')
+        return
+      }
 
-      // Web Audio for analysis
+      // Web Audio for the level
       audioContext = new (window.AudioContext || window.webkitAudioContext)()
       const source = audioContext.createMediaStreamSource(mediaStream)
       analyser = audioContext.createAnalyser()
@@ -88,7 +96,6 @@ export function startRecording(onVolume) {
 
       // MediaRecorder for actual capture
       const mimeType = pickMimeType()
-
       mediaRecorder = new MediaRecorder(mediaStream, mimeType ? { mimeType } : undefined)
       chunks = []
 
@@ -97,16 +104,18 @@ export function startRecording(onVolume) {
       }
 
       mediaRecorder.onstop = async () => {
+        const type = mediaRecorder?.mimeType || mimeType
         cleanup()
-        const blob = new Blob(chunks, { type: mediaRecorder.mimeType })
+        const blob = new Blob(chunks, { type })
         chunks = []
 
-        if (blob.size < 1000) {
-          // Too short / empty
+        if (cancelled || blob.size < 1000) {
+          // Cancelled, or too short to hold a word.
           resolveRecording?.('')
           return
         }
 
+        onStop?.()
         try {
           const text = await transcribe(blob)
           resolveRecording?.(text)
@@ -122,22 +131,29 @@ export function startRecording(onVolume) {
       }
 
       mediaRecorder.start(250) // collect in 250ms chunks
-      recordStart = Date.now()
+      maxTimer = setTimeout(stopRecording, maxMs)
       monitorVolume()
 
     } catch (err) {
+      opening = false
       cleanup()
       reject(err)
     }
   })
 }
 
-// ── Stop recording ───────────────────────────────────────
+// ── Stop / cancel ────────────────────────────────────────
 
+/** Stop and transcribe. Safe to call while the mic is still opening. */
 export function stopRecording() {
-  if (mediaRecorder && mediaRecorder.state === 'recording') {
-    mediaRecorder.stop()
-  }
+  if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop()
+  else if (opening) pendingStop = true
+}
+
+/** Stop and throw the recording away (Esc). */
+export function cancelRecording() {
+  cancelled = true
+  stopRecording()
 }
 
 export function isRecording() {
@@ -148,9 +164,10 @@ export function isRecording() {
 
 function cleanup() {
   cancelAnimationFrame(rafId)
-  clearTimeout(silenceTimer)
-  silenceTimer = null
+  clearTimeout(maxTimer)
+  maxTimer = null
   volumeCallback = null
+  mediaRecorder = null
 
   if (audioContext) {
     audioContext.close().catch(() => {})

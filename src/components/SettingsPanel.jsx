@@ -15,6 +15,7 @@ import {
 } from '../lib/voicePrefs.js'
 import { THEMES, SCHEMES } from '../lib/themes.js'
 import { isSoundEnabled, setSoundEnabled, playChime } from '../lib/chime.js'
+import { AMBIENT_CHOICES } from '../lib/uiPrefs.js'
 
 function getDeviceId() {
   const match = document.cookie.match(/(?:^|;\s*)nandi_device_id=([^;]+)/)
@@ -64,7 +65,7 @@ export function Toggle({ value, onChange, label }) {
  * One owner per setting removes both.
  *
  * `theme` (accent) and `scheme` (light / dark) are owned by ChatView too: the menu, the command palette and the T key
- * change it as well.
+ * change it as well. So is `ambientDelay`: ChatView's idle timer reads it.
  *
  * `autoSend` stays local: ChatInput reads the key at the moment it needs it, so
  * there is no second copy to fall out of step. The voice settings (language,
@@ -83,6 +84,8 @@ export default function SettingsPanel({
   scheme,
   onSchemeChange,
   onOpenAudioStreams,
+  ambientDelay,
+  onAmbientDelayChange,
 }) {
   const [autoSend, setAutoSend] = useState(() => {
     return localStorage.getItem('nandi_auto_send_stt') !== 'false'
@@ -258,6 +261,24 @@ export default function SettingsPanel({
               <span className="settings-row__label">Show activity logs</span>
               <Toggle value={showLogs} onChange={onShowLogsChange} />
             </div>
+            {onAmbientDelayChange && (
+              <div className="settings-row">
+                <label className="settings-row__label" htmlFor="settings-ambient">
+                  Ambient mode after
+                  <span className="settings-row__hint">
+                    When nothing is happening and nothing is on screen, only the core and a clock stay. Any key or touch brings everything back.
+                  </span>
+                </label>
+                <select
+                  id="settings-ambient"
+                  className="settings-select"
+                  value={ambientDelay}
+                  onChange={(e) => onAmbientDelayChange(Number(e.target.value))}
+                >
+                  {AMBIENT_CHOICES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                </select>
+              </div>
+            )}
           </div>
 
           {/* Connection */}

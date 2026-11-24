@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   startVisionControl,
   onVisionCommand,
@@ -6,7 +6,8 @@ import {
   getVisionControlError,
   getMyClientId,
 } from '../lib/visionControl.js'
-import { startProducer } from '../lib/webrtcConsumer.js'
+import { startFrameProducer } from '../lib/visionFrames.js'
+import { absoluteUrl } from '../lib/filesApi.js'
 
 let boxCounter = 0
 const nextBoxId = () => `vbox_${++boxCounter}_${Date.now()}`
@@ -45,7 +46,8 @@ function withAudioStream(boxes, id, streamId, label) {
  *
  * A box: { id, type: 'frame' | 'stream' | 'camera' | 'file' | 'audio' | 'audio_stream', label, at, ...media }
  *   frame         imageB64, mime, camera, fileId   (a show_frame for a wid on screen updates it)
- *   file          file {file_id, filename, mime, size, kind}, url (signed download link)
+ *   file          file {file_id, filename, mime, size, kind}, url (signed download link),
+ *                 preview {format, text, truncated} (a docx/xlsx/text preview, when the brain sends one)
  *   stream        streamId                 (deduped by id)
  *   camera        streamId, producer
  *   audio         url, mime, autoplay, durationS   (a clip from the audio server; deduped by wid,
@@ -88,18 +90,32 @@ export default function useVisionBoxes() {
           return capFrames([...prev, { id, type: 'frame', label: label || 'Frame', at: Date.now(), ...image }])
         })
       } else if (action === 'show_file') {
-        // Any non-image file the brain shows here: a card to play or download it.
+        // A file from Nandi's file store (an image over the inline size, a
+        // PDF, a document, a video…): a window that shows it.
         const file = msg.file && typeof msg.file === 'object' ? msg.file : {}
         const id = wid || `file_${file.file_id || nextBoxId()}`
-        const box = { id, type: 'file', label: label || file.filename || 'File', file, url: msg.url || '', at: Date.now() }
-        setBoxes(prev => (prev.some(b => b.id === id) ? prev.map(b => (b.id === id ? { ...box, at: b.at } : b))
-          : [...prev, box]))
-      } else if (action === 'play_audio' && /^https?:\/\//i.test(msg.url || '')) {
-        // A clip from the audio server: a signed URL that needs no auth header.
+        const preview = msg.preview && typeof msg.preview === 'object' ? msg.preview : null
+        const box = { id, type: 'file', label: label || file.filename || 'File', file, url: msg.url || '', preview, at: Date.now() }
+        setBoxes(prev => {
+          const existing = prev.find(b => b.id === id)
+          if (!existing) return [...prev, box]
+          // The same file shown again comes with a freshly signed link. Swapping
+          // it in would reload a playing video or a PDF from the start (the
+          // window "blinks"), so the window keeps its link and its place.
+          const same = existing.type === 'file' && existing.file?.file_id && existing.file.file_id === file.file_id
+          return prev.map(b => (b.id !== id ? b
+            : same ? { ...b, label: box.label, file: { ...b.file, ...file }, preview: preview || b.preview }
+            : { ...box, at: b.at }))
+        })
+      } else if (action === 'play_audio' && /^https?:\/\//i.test(absoluteUrl(msg.url || ''))) {
+        // A clip from the audio server, or a voice note from Nandi's files: a
+        // signed URL that needs no auth header. The brain's own links are
+        // relative (/f/<token>), so they are made absolute first — they used to
+        // be dropped here.
         const clip = {
           type: 'audio',
           label: label || 'Audio',
-          url: msg.url,
+          url: absoluteUrl(msg.url),
           mime: msg.mime || '',
           autoplay: msg.autoplay !== false,
           durationS: Number(msg.duration_s) || 0,
@@ -122,8 +138,13 @@ export default function useVisionBoxes() {
         const id = wid || `stream_${stream_id}`
         setBoxes(prev => (prev.some(b => b.id === id) ? prev
           : [...prev, { id, type: 'stream', label: label || stream_id, streamId: stream_id, at: Date.now() }]))
-      } else if (action === 'close' && wid) {
-        setBoxes(prev => prev.filter(b => b.id !== wid))
+      } else if (action === 'close' && (wid || file_id)) {
+        // By window id, or by file: "close that photo" closes every window
+        // showing that file (a frame from a tool, or the file itself).
+        setBoxes(prev => prev.filter(b => !(
+          (wid && b.id === wid)
+          || (file_id && (b.fileId === file_id || b.file?.file_id === file_id))
+        )))
       } else if (action === 'close_all') {
         // Server-initiated, so it only clears what the server put up — audio
         // cards included (they stop and hang up as they unmount). The user's
@@ -172,7 +193,7 @@ export default function useVisionBoxes() {
     setCameraError('')
     const streamId = `${getMyClientId()}_camera`
     try {
-      const producer = await startProducer({
+      const producer = await startFrameProducer({
         streamId,
         facingMode: 'environment',
         callbacks: { onLog: (text, type) => console.log(`[producer] ${text}`, type) },
@@ -201,9 +222,14 @@ export default function useVisionBoxes() {
     else startCamera()
   }, [startCamera, stopCamera])
 
-  return {
-    boxes, ctrlConnected, ctrlError, cameraError, cameraOn,
-    clearCameraError: useCallback(() => setCameraError(''), []),
+  const clearCameraError = useCallback(() => setCameraError(''), [])
+
+  // One object per change of what it holds, not per render: callers put its
+  // functions in their own useCallback / useMemo deps, and a fresh object
+  // every render rebuilt them all (and everything that depended on them).
+  return useMemo(() => ({
+    boxes, ctrlConnected, ctrlError, cameraError, cameraOn, clearCameraError,
     close, closeAll, openStream, openAudioStream, startCamera, stopCamera, toggleCamera,
-  }
+  }), [boxes, ctrlConnected, ctrlError, cameraError, cameraOn, clearCameraError,
+    close, closeAll, openStream, openAudioStream, startCamera, stopCamera, toggleCamera])
 }

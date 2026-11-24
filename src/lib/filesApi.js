@@ -87,6 +87,48 @@ export async function downloadFile(id, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 10000)
 }
 
+// ── Viewing a file in a window (FileViewer) ──────────────────────────────
+// Read with the login, from /api/files/{id}/content, rather than through the
+// signed /f/ link: /f/ answers with a `sandbox` Content-Security-Policy, and
+// the browsers' PDF viewers refuse to run under it.
+
+/** The file's bytes as a Blob. Rejects (err.tooLarge) above maxBytes. */
+export async function fetchFileBlob(id, { maxBytes = 0, signal } = {}) {
+  const res = await fetch(`${API_BASE}/api/files/${id}/content`, { headers: authHeaders(), signal })
+  if (!res.ok) throw new Error(res.status === 404 ? 'File not found' : `Could not load the file (${res.status})`)
+  const length = Number(res.headers.get('content-length')) || 0
+  if (maxBytes && length > maxBytes) {
+    res.body?.cancel?.()
+    throw Object.assign(new Error('Too large to show here'), { tooLarge: true })
+  }
+  return res.blob()
+}
+
+/** The first maxBytes of a text file → { text, truncated }. */
+export async function fetchFileText(id, { maxBytes = 512 * 1024, size = 0, signal } = {}) {
+  const res = await fetch(`${API_BASE}/api/files/${id}/content`, {
+    headers: authHeaders({ Range: `bytes=0-${maxBytes - 1}` }), signal,
+  })
+  if (!res.ok) throw new Error(res.status === 404 ? 'File not found' : `Could not load the file (${res.status})`)
+  const buf = await res.arrayBuffer()
+  // A cut can land inside a multi-byte character; the decoder replaces it.
+  const text = new TextDecoder('utf-8').decode(buf.byteLength > maxBytes ? buf.slice(0, maxBytes) : buf)
+  return { text, truncated: (size && size > maxBytes) || buf.byteLength > maxBytes }
+}
+
+/**
+ * A text / table preview the brain made of a document it cannot show as is
+ * (Word, Excel…): { format: 'markdown' | 'table' | 'text', text, truncated },
+ * or null when it has none.
+ */
+export async function fetchPreview(id, { signal } = {}) {
+  const res = await fetch(`${API_BASE}/api/files/${id}/preview`, { headers: authHeaders(), signal })
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`Could not load a preview (${res.status})`)
+  const data = await res.json()
+  return data && typeof data.text === 'string' ? data : null
+}
+
 /** This user's devices with a Nandi screen open: [{ client_id, device_name, display_connected, ... }] */
 export async function listClients() {
   const data = await request('/api/vision/clients')
@@ -106,7 +148,7 @@ export function humanSize(n) {
 
 export const SOURCE_LABEL = {
   chat_upload: 'upload', vision: 'camera', android: 'phone', ubuntu: 'PC', mcp: 'tool',
-  audio: 'recording', job: 'job', device: 'device',
+  audio: 'recording', job: 'job', device: 'device', nandi: 'made by Nandi', web: 'web',
 }
 
 // ── Scheduled tasks (Brain: manager/scheduler.py, api/tasks.py) ──────────
