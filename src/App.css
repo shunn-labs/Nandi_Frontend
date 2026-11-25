@@ -1644,6 +1644,12 @@ kbd {
   font: 400 10px var(--font-mono); letter-spacing: 0.04em; color: var(--text-muted);
 }
 .tr__via--lead { margin: 0 0 4px; }
+.tr__open {
+  float: right; margin: 0 0 4px 8px; padding: 1px 8px;
+  border: 1px solid var(--border-light); border-radius: 999px; background: none; cursor: pointer;
+  font: 400 11px var(--font-mono); color: var(--cyan-dim);
+}
+.tr__open:hover, .tr__open:focus-visible { color: var(--text-primary); border-color: var(--cyan-dim); }
 
 /* ── Settings: voice rows ── */
 .settings-row__label { display: flex; flex-direction: column; gap: 2px; }

@@ -25,7 +25,7 @@ const DOMAIN_LABEL = { android: 'Phone', ubuntu_control: 'PC' }
  */
 export default function Console({
   open, onToggle, tab, onTab,
-  messages, activities, onStopActivity,
+  messages, activities, onStopActivity, onOpenAnswer,
   showLogs, connected,
   capDevices, vision, tasksVersion = 0,
 }) {
@@ -66,7 +66,7 @@ export default function Console({
             ))}
           </div>
         ) : (
-          <button className="console__latest" onClick={() => { onTab('logs'); onToggle() }}>{latestLog}</button>
+          <button className="console__latest" onClick={() => { onTab('logs'); onToggle() }} title="Open logs (L)">{latestLog}</button>
         )}
         <span className={`console__status${connected ? '' : ' console__status--off'}`}>
           <i />{connected ? 'connected' : 'offline'}
@@ -74,7 +74,7 @@ export default function Console({
       </div>
 
       <div className="console__body" style={{ height }}>
-        <div hidden={tab !== 'transcript'}><Transcript messages={messages} /></div>
+        <div hidden={tab !== 'transcript'}><Transcript messages={messages} onOpen={onOpenAnswer} /></div>
         <div hidden={tab !== 'logs'}>
           {showLogs ? <LogPanel onLatest={setLatestLog} />
             : <div className="console__pane console__empty">Logs are switched off in Settings.</div>}

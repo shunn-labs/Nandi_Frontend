@@ -18,7 +18,8 @@ import PlanCard from './PlanCard.jsx'
 import NotificationCard from './NotificationCard.jsx'
 import ActivityCard, { applyActivity } from './ActivityCard.jsx'
 import useVisionBoxes from '../hooks/useVisionBoxes.js'
-import useStageItems from '../hooks/useStageItems.js'
+import useStageItems, { isImageBox, isLiveBox } from '../hooks/useStageItems.js'
+import { loadRecentConversation } from '../lib/conversationApi.js'
 import { getAmbientDelay, setAmbientDelay } from '../lib/uiPrefs.js'
 import {
   ensureConnection,
@@ -75,12 +76,9 @@ const VOICE_CORE = { connecting: 'thinking', thinking: 'thinking', speaking: 'sp
 // is never cut off — only silence is.
 const REPLY_TIMEOUT_MS = 90000
 
-// Answered prompts stay on screen this long, so their outcome can be read.
-const DONE_PROMPT_MS = 4000
-
-// A job's card stays on the stage this long after the job ends, so "Done" and
-// its summary are seen (it stays in the console's Activity tab).
-const DONE_JOB_MS = 60000
+// Answered prompts (4 s) and finished jobs (60 s) leave the stage by
+// themselves, like answers, notifications, snapshots and files: useStageItems
+// says when, Stage closes them (with the fade, never while you hold them).
 
 // Two presses of Esc within this window clear the whole screen.
 const DOUBLE_ESC_MS = 600
@@ -400,6 +398,84 @@ export default function ChatView({ onLogout }) {
     ensureConnection()
   }, [onLogout, armReplyTimer, clearReplyTimer, say])
 
+  // ── Windows that leave by themselves, or on request ─────
+  // A new turn (typed, dictated, or a voice-mode turn) retires the answer and
+  // notification cards still up from before: the new answer takes their
+  // place. Snapshots and files stay for that turn — a follow-up ("what does
+  // this bill say?") still needs them — and go when a newer turn brings
+  // pictures or files of its own, when their own time runs out, or on request.
+  // Windows the user is holding (hovered, moved, maximised) stay until let go.
+  const turnStartRef = useRef(0)
+  const newTurn = useCallback(() => {
+    turnStartRef.current = Date.now()
+    const ids = itemsRef.current.filter(i => i.type === 'answer' || i.type === 'notification').map(i => i.id)
+    if (ids.length) stageRef.current?.expire(ids)
+  }, [])
+
+  // "Remove this image", "close that card": the brain's screen__close tool.
+  //   front        the window on top (never a live camera or mic view)
+  //   last_answer / answers, last_image / images, files, notifications
+  //   all          everything except live views (like Clear)
+  //   file_ids     the windows showing those files
+  const closeCards = useCallback((what, fileIds = []) => {
+    const list = itemsRef.current
+    const isLive = (i) => i.type === 'vision' && isLiveBox(i.data)
+    const isImage = (i) => i.type === 'vision' && isImageBox(i.data)
+    const isFile = (i) => i.type === 'vision' && i.data.type === 'file'
+    const newest = (arr) => (arr.length ? [arr.reduce((a, b) => (b.at >= a.at ? b : a))] : [])
+    const pick = fileIds.length
+      ? list.filter(i => i.type === 'vision' && (fileIds.includes(i.data.fileId) || fileIds.includes(i.data.file?.file_id)))
+      : []
+    switch (what) {
+      case 'front': {
+        const byId = new Map(list.map(i => [i.id, i]))
+        const order = stageRef.current?.order() || []
+        const top = [...order].reverse().map(id => byId.get(id)).find(i => i && !isLive(i))
+        if (top) pick.push(top)
+        break
+      }
+      case 'last_answer': pick.push(...newest(list.filter(i => i.type === 'answer'))); break
+      case 'answers': pick.push(...list.filter(i => i.type === 'answer')); break
+      case 'last_image': pick.push(...newest(list.filter(isImage))); break
+      case 'images': pick.push(...list.filter(isImage)); break
+      case 'files': pick.push(...list.filter(isFile)); break
+      case 'notifications': pick.push(...list.filter(i => i.type === 'notification')); break
+      case 'all': pick.push(...list.filter(i => !isLive(i))); break
+      default:
+    }
+    const ids = [...new Set(pick.map(i => i.id))]
+    if (ids.length) stageRef.current?.close(ids)
+  }, [])
+
+  // "Open" in the transcript: the answer's card comes back with a fresh time.
+  const reopenAnswer = useCallback((m) => {
+    if (!m?.id) return
+    setHidden(prev => {
+      if (!prev.has(m.id)) return prev
+      const next = new Set(prev)
+      next.delete(m.id)
+      return next
+    })
+    setMessages(prev => prev.map(x => (x.id === m.id ? { ...x, reopenedAt: Date.now() } : x)))
+    stageRef.current?.touch(m.id)
+    setTimeout(() => stageRef.current?.focus(m.id), 60)
+  }, [])
+
+  // The recent conversation the brain keeps (Postgres), so answers that left
+  // the screen — or are from an earlier visit — can be read and opened again.
+  useEffect(() => {
+    let cancelled = false
+    loadRecentConversation().then((list) => {
+      if (cancelled || !list.length) return
+      setMessages(prev => {
+        const have = new Set(prev.map(m => m.id).filter(Boolean))
+        const add = list.filter(m => !have.has(m.id))
+        return add.length ? [...add, ...prev] : prev
+      })
+    })
+    return () => { cancelled = true }
+  }, [])
+
   // ── Cards, live jobs, devices and events (brain display channel) ─────
   useEffect(() => onUiFrame((f) => {
     switch (f.action) {
@@ -478,6 +554,9 @@ export default function ChatView({ onLogout }) {
         }
         break
       }
+      case 'close_cards':
+        closeCards(asText(f.what), Array.isArray(f.file_ids) ? f.file_ids.map(asText).filter(Boolean) : [])
+        break
       case 'event': {
         const ev = eventMessage(f)
         setMessages(prev => insertCard(prev, ev))
@@ -486,7 +565,7 @@ export default function ChatView({ onLogout }) {
       }
       default:
     }
-  }), [armReplyTimer, toast, say])
+  }), [armReplyTimer, toast, say, closeCards])
 
   const handlePromptAnswer = useCallback((id, action, content) => {
     const sent = sendDisplay({ type: 'prompt_answer', id, action, content: content || {} })
@@ -503,6 +582,7 @@ export default function ChatView({ onLogout }) {
     if (!text && attachments.length === 0) return
     stopSpeech()
     setAmbient(false)
+    newTurn()
 
     // Sent first, because the placeholder needs the request id that the
     // server's progress frames and answer will quote back.
@@ -523,7 +603,7 @@ export default function ChatView({ onLogout }) {
       return
     }
     armReplyTimer(requestId)
-  }, [armReplyTimer, failPending])
+  }, [armReplyTimer, failPending, newTurn])
 
   // "Change something…" on a plan card is an ordinary chat message: the brain
   // makes a new plan, sends a new card and closes the old one.
@@ -696,27 +776,6 @@ export default function ChatView({ onLogout }) {
     }
   }, [handleVisionCapture, handlePromptAnswer, handlePlanChange, handleStopTask, setAspect])
 
-  // Answered prompts leave the screen after a moment (they stay in the transcript).
-  useEffect(() => {
-    const done = messages.filter(m => m.role === 'prompt' && !isOpenPrompt(m) && !hidden.has(m.id))
-    if (!done.length) return undefined
-    const t = setTimeout(() => setHidden(prev => new Set([...prev, ...done.map(m => m.id)])), DONE_PROMPT_MS)
-    return () => clearTimeout(t)
-  }, [messages, hidden])
-
-  // A finished job's window leaves DONE_JOB_MS after it ended. Counted from when
-  // it ended (applyActivity's doneAt), so later messages do not keep it up.
-  useEffect(() => {
-    const done = messages.filter(m => m.role === 'activity' && m.source === 'job' && m.state === 'done' && !hidden.has(m.id))
-    if (!done.length) return undefined
-    const due = (m) => (m.doneAt || 0) + DONE_JOB_MS
-    const first = Math.min(...done.map(due))
-    const t = setTimeout(() => {
-      setHidden(prev => new Set([...prev, ...done.filter(m => due(m) <= first).map(m => m.id)]))
-    }, Math.max(0, first - Date.now()))
-    return () => clearTimeout(t)
-  }, [messages, hidden])
-
   // Closing a window: a vision box goes from the boxes, a card from the stage
   // (it stays in the transcript). Read through a ref so the function is stable.
   const boxesRef = useRef(vision.boxes)
@@ -734,6 +793,19 @@ export default function ChatView({ onLogout }) {
     visionCloseAll()
     setHidden(prev => new Set([...prev, ...itemsRef.current.map(c => c.id)]))
   }, [visionCloseAll])
+
+  // A newer turn's pictures, files or clips replace the ones from before it.
+  useEffect(() => {
+    const since = turnStartRef.current
+    if (!since) return
+    const media = vision.boxes.filter(b => !isLiveBox(b))
+    if (!media.some(b => b.at >= since)) return
+    const older = media.filter(b => b.at < since).map(b => b.id)
+    if (older.length) stageRef.current?.expire(older)
+  }, [vision.boxes])
+
+  // A voice-mode turn is a new turn too.
+  useEffect(() => { if (voiceOpen && voiceState === 'thinking') newTurn() }, [voiceOpen, voiceState, newTurn])
 
   const hasItems = items.length > 0
   const narrow = useNarrow()
@@ -850,6 +922,7 @@ export default function ChatView({ onLogout }) {
   const menuItems = [
     { label: 'Settings', onSelect: () => setSettingsOpen(true) },
     { label: consoleOpen ? 'Close console' : 'Open console', hint: 'Ctrl `', onSelect: () => setConsoleOpen(o => !o) },
+    { label: 'Logs', hint: 'L', onSelect: () => openConsole('logs') },
     { label: 'Files', onSelect: () => openConsole('files') },
     { label: 'Scheduled tasks', onSelect: () => openConsole('tasks') },
     { label: voiceOpen ? 'End voice mode' : 'Voice mode', onSelect: voiceOpen ? closeVoice : openVoice },
@@ -872,7 +945,7 @@ export default function ChatView({ onLogout }) {
     { label: micShare.on ? 'Stop sharing this microphone' : 'Share this microphone', onSelect: () => toggleMicShare(!micShare.on) },
     { label: 'Open settings', onSelect: () => setSettingsOpen(true) },
     { label: 'Open transcript', hint: 'console', onSelect: () => openConsole('transcript') },
-    { label: 'Open logs', hint: 'console', onSelect: () => openConsole('logs') },
+    { label: 'Open logs', hint: 'L', onSelect: () => openConsole('logs') },
     { label: 'Open activity', hint: 'console', onSelect: () => openConsole('activity') },
     { label: 'Open devices', hint: 'console', onSelect: () => openConsole('devices') },
     { label: 'Open files', hint: 'console', onSelect: () => openConsole('files') },
@@ -897,7 +970,8 @@ export default function ChatView({ onLogout }) {
   // ── Keyboard ───────────────────────────────────────────
   // Read through a ref so the listener is attached once.
   const keysRef = useRef(null)
-  keysRef.current = { ambient, paletteOpen, settingsOpen, speaking, clearStage, stopAllJobs, cycleTheme, clearConversation }
+  keysRef.current = { ambient, paletteOpen, settingsOpen, speaking, clearStage, stopAllJobs, cycleTheme, clearConversation,
+                      consoleOpen, consoleTab }
 
   useEffect(() => {
     // Hold Space to talk: key-down starts, key-up (or leaving the window with
@@ -932,6 +1006,21 @@ export default function ChatView({ onLogout }) {
       if (e.key === '/') { e.preventDefault(); chatInputRef.current?.focus(); return }
       if (e.key === 'o' || e.key === 'O') { stageRef.current?.autoArrange(); return }
       if (e.key === 't' || e.key === 'T') { k.cycleTheme(); return }
+      // L: straight to the recent logs (again: close them).
+      if (e.key === 'l' || e.key === 'L') {
+        if (k.consoleOpen && k.consoleTab === 'logs') setConsoleOpen(false)
+        else { setConsoleTab('logs'); setConsoleOpen(true) }
+        return
+      }
+      // Enter sends what is waiting in the bar (a transcript left there when
+      // auto-send is off) even though the focus is not in the text box. A
+      // focused button or link keeps Enter for itself.
+      if (e.key === 'Enter' && !e.shiftKey) {
+        const tag = document.activeElement?.tagName
+        if (voiceOpenRef.current || micPhaseRef.current !== 'idle' || tag === 'BUTTON' || tag === 'A') return
+        if (chatInputRef.current?.send()) e.preventDefault()
+        return
+      }
       // Space: while Nandi talks (or is about to), a press only stops her —
       // that press never starts the mic, even held. Otherwise hold to talk.
       // A focused button takes Space itself (the browser clicks it).
@@ -1011,7 +1100,8 @@ export default function ChatView({ onLogout }) {
           amplitudeRef={voiceLevelRef} anchorRefs={coreAnchors} onActivate={globeTap} />
 
         <Stage ref={stageRef} items={items} renderContent={renderContent} onClose={closeCard}
-          onClear={clearStage} narrow={narrow} onArrangedChange={setArranged} />
+          onClear={clearStage} narrow={narrow} onArrangedChange={setArranged}
+          speaking={speaking || voiceBusy} />
 
         <section className="voice" aria-label="Nandi">
           {showHint && (
@@ -1064,7 +1154,7 @@ export default function ChatView({ onLogout }) {
       <Console
         open={consoleOpen} onToggle={() => setConsoleOpen(o => !o)}
         tab={consoleTab} onTab={setConsoleTab}
-        messages={messages} activities={activities} onStopActivity={handleStopTask}
+        messages={messages} activities={activities} onStopActivity={handleStopTask} onOpenAnswer={reopenAnswer}
         showLogs={showLogs} connected={connected} capDevices={capDevices}
         vision={consoleVision} tasksVersion={tasksVersion}
       />

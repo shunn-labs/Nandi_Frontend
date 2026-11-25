@@ -9,6 +9,15 @@ const DRAG_PX = 4             // a press that moves less than this is a click
 const MIN_W = 200
 const MIN_H = HEAD + 90
 const KEEP_VISIBLE = 80       // px of a dragged window that must stay on the stage
+const TICK_MS = 500           // how often windows that close by themselves are checked
+const GRACE_MS = 10000        // a window you stop holding stays at least this long
+
+// Dev only: shorten every auto-close time (localStorage nandi_autoclose_scale,
+// e.g. 0.05), so the behaviour can be tested without waiting minutes.
+function closeScale() {
+  if (!import.meta.env.DEV) return 1
+  try { return Number(localStorage.getItem('nandi_autoclose_scale')) || 1 } catch { return 1 }
+}
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 
@@ -34,6 +43,14 @@ const ICON = {
  *
  * Narrow screens get a scrolling list instead (no dragging).
  *
+ * Windows that close by themselves (item.closeMs; useStageItems sets it for
+ * answers, notifications, snapshots, files, clips, answered prompts and
+ * finished jobs — never live views) close through the same fade as ✕, once
+ * their time is up. A window you are holding stays: hovered, with focus
+ * inside, moved or resized by hand, or maximised; when you let go it gets
+ * at least GRACE_MS more. With item.closeAfterSpeech the count starts only
+ * once Nandi has stopped speaking (`speaking`).
+ *
  * Why it does not blink: windows are memoised on their item (useStageItems
  * keeps an unchanged item the same object), keyed by id and rendered in the
  * order they first appeared — never re-sorted, because moving a DOM node
@@ -45,15 +62,24 @@ const ICON = {
  * onClose(id), onClear()
  * onArrangedChange(bool)  true while a window is moved/resized by hand or
  *                         maximised (so Auto-arrange is worth offering)
- * ref             closeTop() → bool, focus(id), autoArrange()
+ * speaking        Nandi is talking (answers wait for her to finish)
+ * ref             closeTop() → bool, focus(id), autoArrange(),
+ *                 close(ids) — fade out and close now,
+ *                 expire(ids) — close as soon as they are not held,
+ *                 touch(id) — restart a window's time, order() → ids back → front
  */
-const Stage = forwardRef(function Stage({ items, renderContent, onClose, onClear, narrow, onArrangedChange }, ref) {
+const Stage = forwardRef(function Stage({ items, renderContent, onClose, onClear, narrow, onArrangedChange, speaking = false }, ref) {
   const rootRef = useRef(null)
   const [size, setSize] = useState({ w: 0, h: 0 })
   const [manual, setManual] = useState({})          // id → { x, y, w, h, W, H } (px at stage size W×H)
   const [maxId, setMaxId] = useState(null)
   const [zOrder, setZOrder] = useState([])          // back → front
   const [leaving, setLeaving] = useState(() => new Set())
+  // Auto-close: id → when it closes (ms since epoch), and the windows hovered now.
+  const deadlines = useRef(new Map())
+  const hovered = useRef(new Set())
+  // Asked to close (a new turn, a newer picture): goes as soon as it is not held.
+  const expired = useRef(new Set())
 
   // ── The order windows first appeared in (render and tiling order) ──
   const orderRef = useRef([])
@@ -134,7 +160,7 @@ const Stage = forwardRef(function Stage({ items, renderContent, onClose, onClear
 
   // ── What the windows (memoised) call: one stable object ──
   const live = useRef({})
-  live.current = { size, contentH, zOrder, onClose, ordered, leaving }
+  live.current = { size, contentH, zOrder, onClose, ordered, leaving, manual, maxId, speaking }
   const api = useMemo(() => ({
     bounds: () => ({ w: live.current.size.w, h: live.current.contentH }),
     focus: (id) => setZOrder(z => (z[z.length - 1] === id ? z : [...z.filter(x => x !== id), id])),
@@ -144,9 +170,12 @@ const Stage = forwardRef(function Stage({ items, renderContent, onClose, onClear
       rootRef.current?.scrollTo?.({ top: 0 })
     },
     close: (id) => {
+      deadlines.current.delete(id)
+      expired.current.delete(id)
       setLeaving(l => new Set(l).add(id))
       setTimeout(() => live.current.onClose(id), LEAVE_MS)
     },
+    hover: (id, on) => { if (on) hovered.current.add(id); else hovered.current.delete(id) },
     // Called when a drag or resize starts: the window becomes manual at the
     // rect it has now, so a re-tile mid-drag cannot move it.
     beginManual: (id, r) => {
@@ -161,6 +190,42 @@ const Stage = forwardRef(function Stage({ items, renderContent, onClose, onClear
   }), [])
 
   const autoArrange = useCallback(() => { setManual({}); setMaxId(null) }, [])
+
+  // ── Windows that close by themselves ──
+  const isHeld = useCallback((id) => {
+    const l = live.current
+    if (hovered.current.has(id) || l.manual[id] || l.maxId === id) return true
+    const el = rootRef.current?.querySelector(`[data-win="${CSS.escape(id)}"]`)
+    return !!(el && document.activeElement && el !== document.activeElement && el.contains(document.activeElement))
+  }, [])
+  const timed = ordered.some(i => i.closeMs)
+  useEffect(() => {
+    if (!timed) return undefined
+    const tick = () => {
+      const { ordered: list, leaving: l, speaking: talking } = live.current
+      const now = Date.now()
+      const scale = closeScale()
+      const d = deadlines.current
+      const present = new Set()
+      for (const item of list) {
+        present.add(item.id)
+        if (!item.closeMs || l.has(item.id)) { if (!item.closeMs) d.delete(item.id); continue }
+        const ms = item.closeMs * scale
+        if (!d.has(item.id)) d.set(item.id, (item.closeFrom || now) + ms)
+        if (item.closeAfterSpeech && talking && !expired.current.has(item.id)) {
+          d.set(item.id, Math.max(d.get(item.id), now + ms))
+          continue
+        }
+        if (isHeld(item.id)) { d.set(item.id, Math.max(d.get(item.id), now + GRACE_MS * scale)); continue }
+        if (now >= d.get(item.id)) api.close(item.id)
+      }
+      for (const id of [...d.keys()]) if (!present.has(id)) d.delete(id)
+      for (const id of [...expired.current]) if (!present.has(id)) expired.current.delete(id)
+      for (const id of [...hovered.current]) if (!present.has(id)) hovered.current.delete(id)
+    }
+    const t = setInterval(tick, TICK_MS)
+    return () => clearInterval(t)
+  }, [timed, api, isHeld])
 
   useImperativeHandle(ref, () => ({
     closeTop: () => {
@@ -177,6 +242,16 @@ const Stage = forwardRef(function Stage({ items, renderContent, onClose, onClear
       el?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
     },
     autoArrange,
+    close: (ids) => {
+      const open = new Set(live.current.ordered.map(i => i.id))
+      for (const id of ids) if (open.has(id) && !live.current.leaving.has(id)) api.close(id)
+    },
+    expire: (ids) => {
+      const now = Date.now()
+      for (const id of ids) { deadlines.current.set(id, now); expired.current.add(id) }
+    },
+    touch: (id) => { deadlines.current.delete(id); expired.current.delete(id) },
+    order: () => [...live.current.zOrder],
   }), [api, autoArrange])
 
   const arranged = !!maxId || manualKey !== ''
@@ -306,6 +381,8 @@ const StageWindow = memo(function StageWindow({ item, x, y, w, h, z, order, isMa
       style={style}
       aria-label={item.title}
       onPointerDownCapture={() => api.focus(item.id)}
+      onPointerEnter={(e) => { if (e.pointerType !== 'touch') api.hover(item.id, true) }}
+      onPointerLeave={() => api.hover(item.id, false)}
     >
       <header className="win__head"
         onPointerDown={onHeadDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}
