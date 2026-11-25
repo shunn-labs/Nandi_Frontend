@@ -1,5 +1,6 @@
 import React, { memo, useEffect, useRef, useState } from 'react'
 import { startFrameConsumer } from '../lib/visionFrames.js'
+import { playStream, resolveStream } from '../lib/mediaHub.js'
 import { downloadFile } from '../lib/filesApi.js'
 import AudioBox from './AudioBox.jsx'
 import FileViewer from './FileViewer.jsx'
@@ -8,8 +9,11 @@ import FileViewer from './FileViewer.jsx'
  * VisionBox — the picture inside a vision panel on the stage. The panel around
  * it carries the title and Close; this draws the media and its own tools.
  *
- * box.type === 'stream'  → live view: JPEG frames over WebSocket drawn on a
- *                          canvas (visionFrames.js), auto-reconnect + manual refresh
+ * box.type === 'stream'  → live view. The vision server says how to play the
+ *                          stream id (mediaHub.resolveStream): from the media hub
+ *                          over WebRTC into a <video> (the camera's own quality), or
+ *                          JPEG frames over WebSocket drawn on a canvas
+ *                          (visionFrames.js). Auto-reconnect + manual refresh.
  * box.type === 'frame'   → static base64 image (box.mime, JPEG if unset)
  * box.type === 'camera'  → local producer preview (uses producer ref for switching)
  * box.type === 'file'    → a file from Nandi's file store (FileViewer: picture, video,
@@ -45,12 +49,61 @@ function MediaBox({ box, onCapture, onAspect }) {
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
   const consumerRef = useRef(null)
+  const whepRef = useRef('')
   const [state, setState] = useState(box.type === 'frame' ? 'live' : 'connecting')
   const [, forceRender] = useState(0)
+  // stream only: 'pending' until the server says 'webrtc' (media hub) or 'ws'
+  const [transport, setTransport] = useState('pending')
+  const [resolveTick, setResolveTick] = useState(0)
 
-  // ── Stream mode: start the frame consumer with auto-reconnect ──
+  // ── Stream mode: ask the server how to play this stream id ──
   useEffect(() => {
     if (box.type !== 'stream') return
+    let cancelled = false
+    resolveStream(box.streamId).then((r) => {
+      if (cancelled) return
+      whepRef.current = r.whep || ''
+      setTransport(r.transport === 'webrtc' ? 'webrtc' : 'ws')
+    })
+    return () => { cancelled = true }
+  }, [box.type, box.streamId, resolveTick])
+
+  // ── Stream mode: start the player / frame consumer with auto-reconnect ──
+  useEffect(() => {
+    if (box.type !== 'stream' || transport === 'pending') return
+
+    let waitingTimer = null
+    const onState = (s) => {
+      if (s === 'offline' || s === 'failed' || s === 'disconnected') {
+        setState('offline')
+      } else if (s === 'live' || s === 'connected') {
+        setState('live')
+      } else if (s === 'waiting') {
+        // The server has told us there is no producer on this stream id.
+        // Folding that into 'connecting' made a stream that does not exist —
+        // a typo in the box above, a camera that was never started — look
+        // exactly like one that is about to come up, forever.
+        setState('waiting')
+      } else if (s === 'connecting') {
+        setState('connecting')
+      }
+      // Still nothing after a while: ask again how to play it (the camera may
+      // have come up on the other path).
+      if (s === 'live') {
+        if (waitingTimer) { clearTimeout(waitingTimer); waitingTimer = null }
+      } else if (!waitingTimer && (s === 'waiting' || s === 'offline')) {
+        waitingTimer = setTimeout(() => setResolveTick(t => t + 1), 12000)
+      }
+    }
+
+    if (transport === 'webrtc') {
+      consumerRef.current = playStream(box.streamId, videoRef.current,
+        { whep: whepRef.current, onState })
+      return () => {
+        if (waitingTimer) clearTimeout(waitingTimer)
+        consumerRef.current?.close()
+      }
+    }
 
     let lastSize = ''
     consumerRef.current = startFrameConsumer(box.streamId, {
@@ -69,25 +122,14 @@ function MediaBox({ box, onCapture, onAspect }) {
           reportAspect(image.width, image.height)
         }
       },
-      onState: (s) => {
-        if (s === 'offline' || s === 'failed' || s === 'disconnected') {
-          setState('offline')
-        } else if (s === 'live' || s === 'connected') {
-          setState('live')
-        } else if (s === 'waiting') {
-          // The signalling server has told us there is no producer on this
-          // stream id. Folding that into 'connecting' made a stream that does
-          // not exist — a typo in the box above, a camera that was never
-          // started — look exactly like one that is about to come up, forever.
-          setState('waiting')
-        } else if (s === 'connecting') {
-          setState('connecting')
-        }
-      },
+      onState,
     })
 
-    return () => consumerRef.current?.close()
-  }, [box.type, box.streamId])
+    return () => {
+      if (waitingTimer) clearTimeout(waitingTimer)
+      consumerRef.current?.close()
+    }
+  }, [box.type, box.streamId, transport, resolveTick])
 
   // ── Camera mode: attach local stream and react to switches ──
   useEffect(() => {
@@ -140,7 +182,7 @@ function MediaBox({ box, onCapture, onAspect }) {
       return
     }
 
-    if (box.type === 'stream') {
+    if (box.type === 'stream' && transport !== 'webrtc') {
       // The JPEG exactly as the server sent it — no second encode.
       const last = consumerRef.current?.getLastFrame?.()
       if (last?.blob) { finalize(last.blob); return }
@@ -209,7 +251,7 @@ function MediaBox({ box, onCapture, onAspect }) {
           draggable={false}
           onLoad={(e) => reportAspect(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
         />
-      ) : box.type === 'stream' ? (
+      ) : box.type === 'stream' && transport !== 'webrtc' ? (
         <canvas ref={canvasRef} className="vbox__media" />
       ) : (
         <video
