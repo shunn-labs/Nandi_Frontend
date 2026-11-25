@@ -164,6 +164,25 @@ export function needsPanel(text, errors) {
   return /```|^\s*([-*+]|\d+\.)\s|^\s*\|.*\||^#{1,4}\s/m.test(text)
 }
 
+const SPEAK_BLOCK = /<speak>([\s\S]*?)(?:<\/speak>|$)/gi
+
+/**
+ * A reply may carry its spoken line as `<speak>…</speak>`. The brain takes it
+ * out and sends it as `speech`, but an older or odd reply can still have it in
+ * the text: it is never shown, and it is used as the speech when the frame
+ * has none. → { display, speech } (speech '' when there was no block).
+ */
+export function splitSpeak(text) {
+  const s = typeof text === 'string' ? text : ''
+  if (!/<speak>/i.test(s)) return { display: s, speech: '' }
+  const said = []
+  const display = s.replace(SPEAK_BLOCK, (_, inner) => { said.push(inner.trim()); return '' })
+    .replace(/<\/?speak>/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  return { display, speech: said.filter(Boolean).join(' ') }
+}
+
 /** The first sentence of a reply, without markdown symbols, for subtitles. */
 export function firstSentence(text, max = 140) {
   const plain = text

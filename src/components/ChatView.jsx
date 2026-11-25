@@ -18,7 +18,8 @@ import PlanCard from './PlanCard.jsx'
 import NotificationCard from './NotificationCard.jsx'
 import ActivityCard, { applyActivity } from './ActivityCard.jsx'
 import useVisionBoxes from '../hooks/useVisionBoxes.js'
-import useStageItems from '../hooks/useStageItems.js'
+import useStageItems, { isImageBox, isLiveBox } from '../hooks/useStageItems.js'
+import { loadRecentConversation } from '../lib/conversationApi.js'
 import { getAmbientDelay, setAmbientDelay } from '../lib/uiPrefs.js'
 import {
   ensureConnection,
@@ -27,7 +28,8 @@ import {
   onMessage,
   sendMessage,
 } from '../lib/wsAdapter.js'
-import { speak, stop as stopTts, getIsPlaying } from '../lib/ttsPlayer.js'
+import { speak } from '../lib/ttsPlayer.js'
+import { stopSpeech, isSpeechBusy, onClipTalking } from '../lib/speechBus.js'
 import { playChime } from '../lib/chime.js'
 import { onUiFrame, sendDisplay } from '../lib/visionControl.js'
 import { markNotificationsRead } from '../lib/filesApi.js'
@@ -35,7 +37,7 @@ import { scheduleText, waitingText } from '../lib/taskText.js'
 import { THEMES, SCHEMES, applyTheme, applyScheme, loadTheme, loadScheme } from '../lib/themes.js'
 import {
   asText, toProblem, findPending, insertCard, promptMessage, eventMessage, notificationMessage,
-  isOpenPrompt, cardLabel, needsPanel, firstSentence,
+  isOpenPrompt, cardLabel, needsPanel, firstSentence, splitSpeak,
 } from '../lib/messages.js'
 import { stripEmotionTag } from '../lib/emotionTag.js'
 import { micStreamId, publishMic } from '../lib/audioStreams.js'
@@ -74,12 +76,9 @@ const VOICE_CORE = { connecting: 'thinking', thinking: 'thinking', speaking: 'sp
 // is never cut off — only silence is.
 const REPLY_TIMEOUT_MS = 90000
 
-// Answered prompts stay on screen this long, so their outcome can be read.
-const DONE_PROMPT_MS = 4000
-
-// A job's card stays on the stage this long after the job ends, so "Done" and
-// its summary are seen (it stays in the console's Activity tab).
-const DONE_JOB_MS = 60000
+// Answered prompts (4 s) and finished jobs (60 s) leave the stage by
+// themselves, like answers, notifications, snapshots and files: useStageItems
+// says when, Stage closes them (with the fade, never while you hold them).
 
 // Two presses of Esc within this window clear the whole screen.
 const DOUBLE_ESC_MS = 600
@@ -169,7 +168,16 @@ export default function ChatView({ onLogout }) {
   const [aspects, setAspects] = useState({})
 
   // ── Voice ──────────────────────────────────────────────
-  const [speaking, setSpeaking] = useState(false)
+  // Nandi is talking: a reply being read out (or still loading), or one of her
+  // clips (play_audio in her voice) playing.
+  const [ttsSpeaking, setTtsSpeaking] = useState(false)
+  const [clipSpeaking, setClipSpeaking] = useState(false)
+  const speaking = ttsSpeaking || clipSpeaking
+  // Which utterance `ttsSpeaking` belongs to: speak() cuts the previous one
+  // off and its onEnd fires late, so it must not clear the new one.
+  const sayTokenRef = useRef(0)
+  // Space pressed to stop Nandi: that press must not also start the mic.
+  const spaceStoppedRef = useRef(false)
   // Dictation in the bar: idle | recording | transcribing (ChatInput owns it).
   const [micPhase, setMicPhaseState] = useState('idle')
   const micPhaseRef = useRef('idle')
@@ -267,13 +275,37 @@ export default function ChatView({ onLogout }) {
 
   // ── Speaking ───────────────────────────────────────────
   const say = useCallback((text) => {
-    setSpeaking(true)
+    const token = ++sayTokenRef.current
+    setTtsSpeaking(true)
     speak(
       text,
-      (vol) => { voiceLevelRef.current = Math.min(1, vol * 4) },
-      () => { voiceLevelRef.current = 0; setSpeaking(false) },
+      (vol) => { if (sayTokenRef.current === token) voiceLevelRef.current = Math.min(1, vol * 4) },
+      () => {
+        if (sayTokenRef.current !== token) return   // a newer reply took over
+        voiceLevelRef.current = 0
+        setTtsSpeaking(false)
+      },
+      { onBlocked: () => toast('Sound is blocked', 'Click anywhere on the page once so Nandi can speak.') },
     )
-  }, [])
+  }, [toast])
+
+  // Nandi's clips playing on this screen (speak tool) count as her talking.
+  useEffect(() => onClipTalking(setClipSpeaking), [])
+
+  // The globe moves with her voice; a clip's level isn't measured, so while
+  // only a clip talks it gets a gentle, speech-like motion instead.
+  useEffect(() => {
+    if (!clipSpeaking || ttsSpeaking) return undefined
+    let raf = 0
+    const t0 = performance.now()
+    const tick = (now) => {
+      const t = (now - t0) / 1000
+      voiceLevelRef.current = 0.22 + 0.12 * Math.sin(t * 7.3) * Math.sin(t * 2.1 + 1)
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => { cancelAnimationFrame(raf); voiceLevelRef.current = 0 }
+  }, [clipSpeaking, ttsSpeaking])
 
   // ── Chat socket ────────────────────────────────────────
   useEffect(() => {
@@ -310,13 +342,20 @@ export default function ChatView({ onLogout }) {
         return
       }
 
-      // Any other typed frame is not an answer. Untyped ones come from older
-      // servers, and are an answer only if they carry a response or an error.
+      // Any other typed frame is not an answer (stream deltas — `delta`,
+      // `speech_delta` — included). Untyped ones come from older servers, and
+      // are an answer only if they carry a response or an error.
       if (data.type && data.type !== 'response') return
+      // Two outputs: `response` is what is shown (it may be long — a story, a
+      // list), `speech` the short line Nandi says. An older brain sends only
+      // `response`, and then the whole of it is read out, as before. A stray
+      // <speak>…</speak> block in the text is never shown.
+      const { display, speech: blockSpeech } = splitSpeak(asText(data.response_text))
+      const speech = stripEmotionTag(asText(data.speech) || blockSpeech).trim()
       // A reply may open with an emotion tag ("[calm] ") meant for the speech
       // voice. It is never shown; speak() turns it into the voice's emotion.
-      const spoken = asText(data.response_text)
-      const text = stripEmotionTag(spoken)
+      const spoken = speech || display
+      const text = stripEmotionTag(display).trim() || speech
       if (!data.type && !text && !data.error) return
 
       clearReplyTimer(requestId)
@@ -345,16 +384,97 @@ export default function ChatView({ onLogout }) {
         next[i] = reply
         return next
       })
+      // The subtitles carry what Nandi says. A long answer is in its window,
+      // so for it they show the spoken line (or, from an older brain, the
+      // answer's first sentence); a short one is shown whole.
       setCaption(c => ({
         key: Date.now(), echo: c?.echo, isError: reply.isError,
-        text: panel ? firstSentence(replyText) : replyText, short: panel,
+        text: panel ? (speech || firstSentence(replyText)) : replyText, short: panel,
       }))
 
-      if (text && ttsEnabledRef.current && !voiceOpenRef.current) say(spoken)
+      if (spoken.trim() && ttsEnabledRef.current && !voiceOpenRef.current) say(spoken)
     })
 
     ensureConnection()
   }, [onLogout, armReplyTimer, clearReplyTimer, say])
+
+  // ── Windows that leave by themselves, or on request ─────
+  // A new turn (typed, dictated, or a voice-mode turn) retires the answer and
+  // notification cards still up from before: the new answer takes their
+  // place. Snapshots and files stay for that turn — a follow-up ("what does
+  // this bill say?") still needs them — and go when a newer turn brings
+  // pictures or files of its own, when their own time runs out, or on request.
+  // Windows the user is holding (hovered, moved, maximised) stay until let go.
+  const turnStartRef = useRef(0)
+  const newTurn = useCallback(() => {
+    turnStartRef.current = Date.now()
+    const ids = itemsRef.current.filter(i => i.type === 'answer' || i.type === 'notification').map(i => i.id)
+    if (ids.length) stageRef.current?.expire(ids)
+  }, [])
+
+  // "Remove this image", "close that card": the brain's screen__close tool.
+  //   front        the window on top (never a live camera or mic view)
+  //   last_answer / answers, last_image / images, files, notifications
+  //   all          everything except live views (like Clear)
+  //   file_ids     the windows showing those files
+  const closeCards = useCallback((what, fileIds = []) => {
+    const list = itemsRef.current
+    const isLive = (i) => i.type === 'vision' && isLiveBox(i.data)
+    const isImage = (i) => i.type === 'vision' && isImageBox(i.data)
+    const isFile = (i) => i.type === 'vision' && i.data.type === 'file'
+    const newest = (arr) => (arr.length ? [arr.reduce((a, b) => (b.at >= a.at ? b : a))] : [])
+    const pick = fileIds.length
+      ? list.filter(i => i.type === 'vision' && (fileIds.includes(i.data.fileId) || fileIds.includes(i.data.file?.file_id)))
+      : []
+    switch (what) {
+      case 'front': {
+        const byId = new Map(list.map(i => [i.id, i]))
+        const order = stageRef.current?.order() || []
+        const top = [...order].reverse().map(id => byId.get(id)).find(i => i && !isLive(i))
+        if (top) pick.push(top)
+        break
+      }
+      case 'last_answer': pick.push(...newest(list.filter(i => i.type === 'answer'))); break
+      case 'answers': pick.push(...list.filter(i => i.type === 'answer')); break
+      case 'last_image': pick.push(...newest(list.filter(isImage))); break
+      case 'images': pick.push(...list.filter(isImage)); break
+      case 'files': pick.push(...list.filter(isFile)); break
+      case 'notifications': pick.push(...list.filter(i => i.type === 'notification')); break
+      case 'all': pick.push(...list.filter(i => !isLive(i))); break
+      default:
+    }
+    const ids = [...new Set(pick.map(i => i.id))]
+    if (ids.length) stageRef.current?.close(ids)
+  }, [])
+
+  // "Open" in the transcript: the answer's card comes back with a fresh time.
+  const reopenAnswer = useCallback((m) => {
+    if (!m?.id) return
+    setHidden(prev => {
+      if (!prev.has(m.id)) return prev
+      const next = new Set(prev)
+      next.delete(m.id)
+      return next
+    })
+    setMessages(prev => prev.map(x => (x.id === m.id ? { ...x, reopenedAt: Date.now() } : x)))
+    stageRef.current?.touch(m.id)
+    setTimeout(() => stageRef.current?.focus(m.id), 60)
+  }, [])
+
+  // The recent conversation the brain keeps (Postgres), so answers that left
+  // the screen — or are from an earlier visit — can be read and opened again.
+  useEffect(() => {
+    let cancelled = false
+    loadRecentConversation().then((list) => {
+      if (cancelled || !list.length) return
+      setMessages(prev => {
+        const have = new Set(prev.map(m => m.id).filter(Boolean))
+        const add = list.filter(m => !have.has(m.id))
+        return add.length ? [...add, ...prev] : prev
+      })
+    })
+    return () => { cancelled = true }
+  }, [])
 
   // ── Cards, live jobs, devices and events (brain display channel) ─────
   useEffect(() => onUiFrame((f) => {
@@ -415,9 +535,11 @@ export default function ChatView({ onLogout }) {
         else toast(`${notes.length} notifications`, 'arrived while this screen was away')
         // With voice on, a live reminder is also read out after the chime,
         // unless Nandi is already speaking (a backlog is not read out).
-        if (f.action === 'notification' && ttsEnabledRef.current && !getIsPlaying() && !voiceOpenRef.current) {
-          const spoken = firstSentence(notes[0].body || notes[0].title, 240)
-          if (spoken) setTimeout(() => say(spoken), 900)
+        // The brain sends a short `speech` line for it; an older one doesn't,
+        // and then its first sentence is read.
+        if (f.action === 'notification' && ttsEnabledRef.current && !isSpeechBusy() && !voiceOpenRef.current) {
+          const spoken = asText(items[0].speech).trim() || firstSentence(notes[0].body || notes[0].title, 240)
+          if (spoken) setTimeout(() => { if (!isSpeechBusy() && !voiceOpenRef.current) say(spoken) }, 900)
         }
         markNotificationsRead(notes.map(n => n.notificationId).filter(Boolean)).catch(() => {})
         break
@@ -432,6 +554,9 @@ export default function ChatView({ onLogout }) {
         }
         break
       }
+      case 'close_cards':
+        closeCards(asText(f.what), Array.isArray(f.file_ids) ? f.file_ids.map(asText).filter(Boolean) : [])
+        break
       case 'event': {
         const ev = eventMessage(f)
         setMessages(prev => insertCard(prev, ev))
@@ -440,7 +565,7 @@ export default function ChatView({ onLogout }) {
       }
       default:
     }
-  }), [armReplyTimer, toast])
+  }), [armReplyTimer, toast, say, closeCards])
 
   const handlePromptAnswer = useCallback((id, action, content) => {
     const sent = sendDisplay({ type: 'prompt_answer', id, action, content: content || {} })
@@ -455,8 +580,9 @@ export default function ChatView({ onLogout }) {
   // ── Sending ────────────────────────────────────────────
   const handleSend = useCallback((text, attachments) => {
     if (!text && attachments.length === 0) return
-    stopTts()
+    stopSpeech()
     setAmbient(false)
+    newTurn()
 
     // Sent first, because the placeholder needs the request id that the
     // server's progress frames and answer will quote back.
@@ -477,7 +603,7 @@ export default function ChatView({ onLogout }) {
       return
     }
     armReplyTimer(requestId)
-  }, [armReplyTimer, failPending])
+  }, [armReplyTimer, failPending, newTurn])
 
   // "Change something…" on a plan card is an ordinary chat message: the brain
   // makes a new plan, sends a new card and closes the old one.
@@ -502,7 +628,7 @@ export default function ChatView({ onLogout }) {
   const openVoice = useCallback(() => {
     if (micPhaseRef.current !== 'idle') return   // dictation has the microphone
     voiceOpenRef.current = true           // now, not after the next commit: no reply may start speaking in between
-    stopTts()
+    stopSpeech()
     setAmbient(false)
     voiceLevelRef.current = 0
     setVoiceState('connecting')
@@ -527,13 +653,15 @@ export default function ChatView({ onLogout }) {
 
   // A finished voice exchange. It went through the audio server's own brain
   // socket, so the chat socket never saw it — it is added to the transcript here.
+  // `reply` is what the brain showed (it may be long, like a story); only its
+  // short spoken line was said, so a long one opens in its own window.
   const handleVoiceTurn = useCallback(({ user, reply, status }) => {
     const ts = Date.now()
     const added = []
     if (user) added.push({ role: 'user', text: user, ts, voice: true })
     if (reply) {
       added.push({ role: 'ai', id: `voice-${ts}`, text: reply, ts, voice: true, fromServer: true,
-                   isError: status === 'error', errors: [], panel: false })
+                   isError: status === 'error', errors: [], panel: needsPanel(reply, []) })
     }
     if (added.length) setMessages(prev => [...prev, ...added])
   }, [])
@@ -599,7 +727,7 @@ export default function ChatView({ onLogout }) {
   // ── Settings ───────────────────────────────────────────
   const setTts = useCallback((next) => {
     localStorage.setItem('nandi_tts_enabled', next)
-    if (!next) stopTts()
+    if (!next) stopSpeech()
     setTtsEnabled(next)
   }, [])
 
@@ -648,27 +776,6 @@ export default function ChatView({ onLogout }) {
     }
   }, [handleVisionCapture, handlePromptAnswer, handlePlanChange, handleStopTask, setAspect])
 
-  // Answered prompts leave the screen after a moment (they stay in the transcript).
-  useEffect(() => {
-    const done = messages.filter(m => m.role === 'prompt' && !isOpenPrompt(m) && !hidden.has(m.id))
-    if (!done.length) return undefined
-    const t = setTimeout(() => setHidden(prev => new Set([...prev, ...done.map(m => m.id)])), DONE_PROMPT_MS)
-    return () => clearTimeout(t)
-  }, [messages, hidden])
-
-  // A finished job's window leaves DONE_JOB_MS after it ended. Counted from when
-  // it ended (applyActivity's doneAt), so later messages do not keep it up.
-  useEffect(() => {
-    const done = messages.filter(m => m.role === 'activity' && m.source === 'job' && m.state === 'done' && !hidden.has(m.id))
-    if (!done.length) return undefined
-    const due = (m) => (m.doneAt || 0) + DONE_JOB_MS
-    const first = Math.min(...done.map(due))
-    const t = setTimeout(() => {
-      setHidden(prev => new Set([...prev, ...done.filter(m => due(m) <= first).map(m => m.id)]))
-    }, Math.max(0, first - Date.now()))
-    return () => clearTimeout(t)
-  }, [messages, hidden])
-
   // Closing a window: a vision box goes from the boxes, a card from the stage
   // (it stays in the transcript). Read through a ref so the function is stable.
   const boxesRef = useRef(vision.boxes)
@@ -687,6 +794,19 @@ export default function ChatView({ onLogout }) {
     setHidden(prev => new Set([...prev, ...itemsRef.current.map(c => c.id)]))
   }, [visionCloseAll])
 
+  // A newer turn's pictures, files or clips replace the ones from before it.
+  useEffect(() => {
+    const since = turnStartRef.current
+    if (!since) return
+    const media = vision.boxes.filter(b => !isLiveBox(b))
+    if (!media.some(b => b.at >= since)) return
+    const older = media.filter(b => b.at < since).map(b => b.id)
+    if (older.length) stageRef.current?.expire(older)
+  }, [vision.boxes])
+
+  // A voice-mode turn is a new turn too.
+  useEffect(() => { if (voiceOpen && voiceState === 'thinking') newTurn() }, [voiceOpen, voiceState, newTurn])
+
   const hasItems = items.length > 0
   const narrow = useNarrow()
   const stageMode = useHeld(hasItems, DOCK_HOLD_MS)
@@ -699,6 +819,13 @@ export default function ChatView({ onLogout }) {
     else visionOpenStream(streamId, label)
   }, [visionOpenStream])
   const consoleVision = useMemo(() => ({ ...vision, openStream }), [vision, openStream])
+
+  // The brain showed again a live mic or stream that is already open: bring
+  // its window to the front, as opening it from the console does.
+  const focusRequest = vision.focusRequest
+  useEffect(() => {
+    if (focusRequest?.id) stageRef.current?.focus(focusRequest.id)
+  }, [focusRequest])
 
   // The dock's height, for the stage's bottom edge. Written straight to a CSS
   // variable: it changes with the bar (voice mode, attachments), and a React
@@ -776,12 +903,26 @@ export default function ChatView({ onLogout }) {
   const toggleMic = useCallback(() => {
     if (!voiceOpenRef.current) chatInputRef.current?.toggleMic()
   }, [])
+  // The globe. While Nandi talks (or is about to) a tap only stops her — the
+  // next tap listens. Otherwise it toggles dictation, as the mic does.
+  const globeTap = useCallback(() => {
+    if (voiceOpenRef.current) return
+    if (isSpeechBusy()) { stopSpeech(); return }
+    chatInputRef.current?.toggleMic()
+  }, [])
+  // The docked globe is a button. After a mouse click it gives the focus up,
+  // so a later Space reaches hold-to-talk instead of clicking the button again.
+  const dockGlobeClick = useCallback((e) => {
+    if (e.detail > 0) e.currentTarget.blur()
+    globeTap()
+  }, [globeTap])
   const openStreams = useCallback(() => setStreamsOpen(true), [])
   const autoArrange = useCallback(() => stageRef.current?.autoArrange(), [])
 
   const menuItems = [
     { label: 'Settings', onSelect: () => setSettingsOpen(true) },
     { label: consoleOpen ? 'Close console' : 'Open console', hint: 'Ctrl `', onSelect: () => setConsoleOpen(o => !o) },
+    { label: 'Logs', hint: 'L', onSelect: () => openConsole('logs') },
     { label: 'Files', onSelect: () => openConsole('files') },
     { label: 'Scheduled tasks', onSelect: () => openConsole('tasks') },
     { label: voiceOpen ? 'End voice mode' : 'Voice mode', onSelect: voiceOpen ? closeVoice : openVoice },
@@ -798,12 +939,13 @@ export default function ChatView({ onLogout }) {
   const commands = [
     { label: 'Ask Nandi', hint: '/', onSelect: () => chatInputRef.current?.focus() },
     { label: 'Talk', hint: 'hold Space', onSelect: toggleMic },
+    { label: 'Stop Nandi talking', hint: 'Space', onSelect: stopSpeech },
     { label: voiceOpen ? 'End voice mode' : 'Voice mode: a live conversation', onSelect: voiceOpen ? closeVoice : openVoice },
     { label: 'Open live audio streams', onSelect: openStreams },
     { label: micShare.on ? 'Stop sharing this microphone' : 'Share this microphone', onSelect: () => toggleMicShare(!micShare.on) },
     { label: 'Open settings', onSelect: () => setSettingsOpen(true) },
     { label: 'Open transcript', hint: 'console', onSelect: () => openConsole('transcript') },
-    { label: 'Open logs', hint: 'console', onSelect: () => openConsole('logs') },
+    { label: 'Open logs', hint: 'L', onSelect: () => openConsole('logs') },
     { label: 'Open activity', hint: 'console', onSelect: () => openConsole('activity') },
     { label: 'Open devices', hint: 'console', onSelect: () => openConsole('devices') },
     { label: 'Open files', hint: 'console', onSelect: () => openConsole('files') },
@@ -828,7 +970,8 @@ export default function ChatView({ onLogout }) {
   // ── Keyboard ───────────────────────────────────────────
   // Read through a ref so the listener is attached once.
   const keysRef = useRef(null)
-  keysRef.current = { ambient, paletteOpen, settingsOpen, speaking, clearStage, stopAllJobs, cycleTheme, clearConversation }
+  keysRef.current = { ambient, paletteOpen, settingsOpen, speaking, clearStage, stopAllJobs, cycleTheme, clearConversation,
+                      consoleOpen, consoleTab }
 
   useEffect(() => {
     // Hold Space to talk: key-down starts, key-up (or leaving the window with
@@ -852,7 +995,7 @@ export default function ChatView({ onLogout }) {
         // Esc while dictating throws the recording away.
         if (micPhaseRef.current === 'recording') { spaceHeldRef.current = false; chatInputRef.current?.cancelMic(); return }
         if (e.shiftKey) { k.stopAllJobs(); return }
-        if (k.speaking) { stopTts(); return }
+        if (k.speaking || isSpeechBusy()) { stopSpeech(); return }
         const now = performance.now()
         if (now - lastEscRef.current < DOUBLE_ESC_MS) { k.clearStage(); lastEscRef.current = 0; return }
         lastEscRef.current = now
@@ -863,24 +1006,55 @@ export default function ChatView({ onLogout }) {
       if (e.key === '/') { e.preventDefault(); chatInputRef.current?.focus(); return }
       if (e.key === 'o' || e.key === 'O') { stageRef.current?.autoArrange(); return }
       if (e.key === 't' || e.key === 'T') { k.cycleTheme(); return }
-      if (e.code === 'Space' && !e.repeat && document.activeElement?.tagName !== 'BUTTON') {
+      // L: straight to the recent logs (again: close them).
+      if (e.key === 'l' || e.key === 'L') {
+        if (k.consoleOpen && k.consoleTab === 'logs') setConsoleOpen(false)
+        else { setConsoleTab('logs'); setConsoleOpen(true) }
+        return
+      }
+      // Enter sends what is waiting in the bar (a transcript left there when
+      // auto-send is off) even though the focus is not in the text box. A
+      // focused button or link keeps Enter for itself.
+      if (e.key === 'Enter' && !e.shiftKey) {
+        const tag = document.activeElement?.tagName
+        if (voiceOpenRef.current || micPhaseRef.current !== 'idle' || tag === 'BUTTON' || tag === 'A') return
+        if (chatInputRef.current?.send()) e.preventDefault()
+        return
+      }
+      // Space: while Nandi talks (or is about to), a press only stops her —
+      // that press never starts the mic, even held. Otherwise hold to talk.
+      // A focused button takes Space itself (the browser clicks it).
+      if (e.code === 'Space' && document.activeElement?.tagName !== 'BUTTON') {
         e.preventDefault()
-        if (!voiceOpenRef.current && !spaceHeldRef.current) {
+        if (e.repeat || voiceOpenRef.current) return
+        if (isSpeechBusy()) {
+          stopSpeech()
+          spaceStoppedRef.current = true
+          return
+        }
+        if (!spaceStoppedRef.current && !spaceHeldRef.current) {
           spaceHeldRef.current = true
           chatInputRef.current?.startMic()
         }
       }
     }
     const onKeyUp = (e) => {
-      if (e.code === 'Space' && releaseSpace()) e.preventDefault()
+      if (e.code !== 'Space') return
+      if (spaceStoppedRef.current) {
+        spaceStoppedRef.current = false
+        e.preventDefault()
+        return
+      }
+      if (releaseSpace()) e.preventDefault()
     }
+    const onBlur = () => { spaceStoppedRef.current = false; releaseSpace() }
     window.addEventListener('keydown', onKeyDown)
     window.addEventListener('keyup', onKeyUp)
-    window.addEventListener('blur', releaseSpace)
+    window.addEventListener('blur', onBlur)
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       window.removeEventListener('keyup', onKeyUp)
-      window.removeEventListener('blur', releaseSpace)
+      window.removeEventListener('blur', onBlur)
     }
   }, [])
 
@@ -923,14 +1097,15 @@ export default function ChatView({ onLogout }) {
 
       <main className="screen__main" ref={mainRef}>
         <Core state={coreState} mode={coreMode} dockRef={globeRef}
-          amplitudeRef={voiceLevelRef} anchorRefs={coreAnchors} onActivate={toggleMic} />
+          amplitudeRef={voiceLevelRef} anchorRefs={coreAnchors} onActivate={globeTap} />
 
         <Stage ref={stageRef} items={items} renderContent={renderContent} onClose={closeCard}
-          onClear={clearStage} narrow={narrow} onArrangedChange={setArranged} />
+          onClear={clearStage} narrow={narrow} onArrangedChange={setArranged}
+          speaking={speaking || voiceBusy} />
 
         <section className="voice" aria-label="Nandi">
           {showHint && (
-            <p className="voice__hint" ref={hintRef}>Click the core or hold <kbd>Space</kbd> to talk</p>
+            <p className="voice__hint" ref={hintRef}>Click the core or hold <kbd>Space</kbd> to talk · tap either to stop Nandi</p>
           )}
           {/* Under the core while it is in the middle; in the dock otherwise. */}
           {!stageMode && <div className="voice__strip" ref={stripRef}>{jobStrip}</div>}
@@ -951,8 +1126,10 @@ export default function ChatView({ onLogout }) {
             </div>
 
             {/* Where the core sits while windows are on the stage. */}
-            <button className="dock__globe" ref={globeRef} onClick={toggleMic} tabIndex={stageMode ? 0 : -1}
-              aria-hidden={!stageMode} aria-label="Talk to Nandi" title="Talk (or hold Space)" />
+            <button className="dock__globe" ref={globeRef} onClick={dockGlobeClick} tabIndex={stageMode ? 0 : -1}
+              aria-hidden={!stageMode}
+              aria-label={speaking ? 'Stop Nandi talking' : 'Talk to Nandi'}
+              title={speaking ? 'Stop talking (Space)' : 'Talk (or hold Space)'} />
 
             <div className="dock__rest">
               <Captions caption={caption} hold={!!pending || speaking || voiceBusy} docked={stageMode && !narrow} />
@@ -977,7 +1154,7 @@ export default function ChatView({ onLogout }) {
       <Console
         open={consoleOpen} onToggle={() => setConsoleOpen(o => !o)}
         tab={consoleTab} onTab={setConsoleTab}
-        messages={messages} activities={activities} onStopActivity={handleStopTask}
+        messages={messages} activities={activities} onStopActivity={handleStopTask} onOpenAnswer={reopenAnswer}
         showLogs={showLogs} connected={connected} capDevices={capDevices}
         vision={consoleVision} tasksVersion={tasksVersion}
       />

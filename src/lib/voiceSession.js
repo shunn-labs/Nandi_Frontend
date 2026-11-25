@@ -18,9 +18,20 @@
 //      answered) to onTurn — voice turns go through the audio server's brain
 //      socket, so the browser's chat socket never sees them.
 //
+//  Two outputs per reply: what Nandi SAYS (a short line — that is what the
+//  server speaks, and what arrives as bot text / bot-llm-text) and what she
+//  SHOWS (the full answer, which may be long: a story, a list of messages).
+//  The shown text comes in nandi.display messages; onTurn gets it as `reply`,
+//  so a long answer opens in its own window while only the short line was
+//  said. An older server sends no nandi.display: `reply` is then the spoken
+//  text, as before.
+//
 //  Nandi's custom RTVI server messages (voice/brain_bridge.py on the server):
 //    {type:"nandi.state", state:"thinking", request_id}   a turn went to the brain
 //    {type:"nandi.progress", text, request_id}            "Checking the gate camera…"
+//    {type:"nandi.display", request_id, message_id, text, final}
+//                                                         the shown answer: final=false → a delta to
+//                                                         append; final=true → the whole of it (replace)
 //    {type:"nandi.engines", stt, tts, voice}              "local" | "elevenlabs"; voice = "Aiden" | "ElevenLabs"
 //    {type:"nandi.notice", text}                          a reply couldn't be spoken, and why
 //    {type:"nandi.turn", request_id, status}              the brain finished the turn
@@ -132,8 +143,10 @@ async function connectError(err) {
 function newTurn(id, user, typed) {
   return {
     id, user, typed,
-    llm: '',                 // the reply as the brain streamed it (complete when the turn ends)
+    llm: '',                 // the spoken reply as the brain streamed it (complete when the turn ends)
     segments: new Map(),     // the reply as spoken, sentence by sentence (segment_id → text)
+    display: '',             // the shown answer (nandi.display), '' from an older server
+    displayFinal: false,     // `display` is the complete answer
     spoke: false,
     brainDone: false,
     interrupted: false,
@@ -156,7 +169,8 @@ export class VoiceSession {
    *   onProgress(text)          the brain's latest progress line, '' when there is none
    *   onEngines({stt, tts})     'local' | 'elevenlabs' for each
    *   onLevels({mic, bot})      0..1-ish levels, many times a second
-   *   onTurn({id, user, reply, status, error, typed})   one finished exchange
+   *   onTurn({id, user, reply, status, error, typed})   one finished exchange; `reply` is the
+   *                             shown answer when the server sent one, else what was said
    *   onError(error)            error.message is shown to the user; error.code says what kind
    *   onAudioBlocked(blocked)   the browser refused to start Nandi's audio without a tap
    *
@@ -390,6 +404,17 @@ export class VoiceSession {
       case 'nandi.progress':
         if (isCurrent && !t.brainDone) this.h.onProgress?.(String(m.text || ''))
         break
+      case 'nandi.display':
+        if (isCurrent && !t.done) {
+          const text = String(m.text || '')
+          if (m.final) {
+            t.display = text
+            t.displayFinal = true
+          } else if (!t.displayFinal) {
+            t.display += text
+          }
+        }
+        break
       case 'nandi.engines':
         this.h.onEngines?.({ stt: String(m.stt || ''), tts: String(m.tts || ''), voice: String(m.voice || '') })
         break
@@ -425,7 +450,7 @@ export class VoiceSession {
     t.error = m.error ? String(m.error) : ''
     this.h.onProgress?.('')
     // The whole reply is known now, even if she is still saying it.
-    if (t.llm.trim()) this._finishTurn()
+    if (t.llm.trim() || t.display.trim()) this._finishTurn()
     if (this.botSpeaking) return
     if (t.spoke) {
       this._setState('listening')
@@ -445,7 +470,8 @@ export class VoiceSession {
     if (!t || t.done) return
     t.done = true
     clearTimeout(this.timer)
-    const reply = stripEmotionTag(t.llm.trim() ? t.llm : spokenText(t)).trim()
+    const said = stripEmotionTag(t.llm.trim() ? t.llm : spokenText(t)).trim()
+    const reply = stripEmotionTag(t.display).trim() || said
     const status = t.status || (t.interrupted ? 'interrupted' : '')
     if (t.user || reply) {
       this.h.onTurn?.({ id: t.id, user: t.user, reply, status, error: t.error, typed: t.typed })

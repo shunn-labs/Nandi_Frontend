@@ -14,7 +14,7 @@ const PROMPT_STATUS = {
   allowed: 'allowed', denied: 'denied', answered: 'answered', expired: 'expired',
 }
 
-function Line({ m }) {
+function Line({ m, onOpen }) {
   if (m.role === 'user') {
     return (
       <>
@@ -22,6 +22,7 @@ function Line({ m }) {
         <span className="tr__text tr__text--user">
           {m.text}
           {m.voice && <span className="tr__via" title="Said in voice mode">voice</span>}
+          {m.history && <span className="tr__via" title="From an earlier visit (kept by Nandi)">earlier</span>}
           {m.attachments?.map((a, i) => (
             <button key={i} type="button" className="tr__tag tr__tag--link" title="Download"
               onClick={() => downloadFile(a.file_id, a.filename).catch(err => console.warn('[files] download failed', err))}>
@@ -38,6 +39,11 @@ function Line({ m }) {
         <b className="tr__who">Nandi</b>
         <span className="tr__text">
           {m.voice && <span className="tr__via tr__via--lead" title="Said in voice mode">voice</span>}
+          {m.history && <span className="tr__via tr__via--lead" title="From an earlier visit (kept by Nandi)">earlier</span>}
+          {onOpen && m.id && !m.thinking && m.text && (
+            <button type="button" className="tr__open" onClick={() => onOpen(m)}
+              title="Show this answer on the screen again">Open</button>
+          )}
           {m.thinking ? <i className="msg__thinking">{m.progress || 'Thinking…'}</i>
             : m.isError && !m.fromServer ? <span className="msg__error-text">{m.text}</span>
             : <div className={m.isError ? 'msg__error-text' : undefined}><Markdown>{m.text}</Markdown></div>}
@@ -57,8 +63,12 @@ function Line({ m }) {
   )
 }
 
-/** The whole conversation, as a log in the console. */
-export default function Transcript({ messages }) {
+/**
+ * The whole conversation, as a log in the console — including the recent
+ * conversation the brain keeps (marked "earlier"). Every answer has "Open",
+ * which brings its card back on the stage (onOpen).
+ */
+export default function Transcript({ messages, onOpen }) {
   const ref = useRef(null)
   const followRef = useRef(true)
 
@@ -78,7 +88,7 @@ export default function Transcript({ messages }) {
       {messages.map((m, i) => (
         <div key={m.id || `${m.role}-${m.ts}-${i}`} className="tr">
           <time className="tr__time">{time(m.ts)}</time>
-          <Line m={m} />
+          <Line m={m} onOpen={onOpen} />
         </div>
       ))}
     </div>

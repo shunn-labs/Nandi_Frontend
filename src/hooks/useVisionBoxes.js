@@ -38,6 +38,9 @@ function withAudioStream(boxes, id, streamId, label) {
   return [...boxes, { id, type: 'audio_stream', label: label || streamId, streamId, at: Date.now() }]
 }
 
+// What the audio server's speak tool labels a clip in Nandi's own voice.
+const NANDI_VOICE_LABEL = 'Nandi'
+
 /**
  * The media boxes on screen: frames, streams, files and audio the brain shows
  * on this device (show_frame / show_stream / show_file / play_audio /
@@ -50,9 +53,13 @@ function withAudioStream(boxes, id, streamId, label) {
  *                 preview {format, text, truncated} (a docx/xlsx/text preview, when the brain sends one)
  *   stream        streamId                 (deduped by id)
  *   camera        streamId, producer
- *   audio         url, mime, autoplay, durationS   (a clip from the audio server; deduped by wid,
- *                                                   the 6 most recent are kept)
+ *   audio         url, mime, autoplay, durationS, voice   (a clip from the audio server; deduped by
+ *                                                   wid, the 6 most recent are kept; `voice`: it is
+ *                                                   Nandi speaking, so interrupting her stops it)
  *   audio_stream  streamId                 (a live mic on the audio server; deduped by wid)
+ *
+ * focusRequest { id, n }: the brain showed again a live mic (or stream) that is
+ * already open — the screen brings that window to the front.
  */
 export default function useVisionBoxes() {
   const [boxes, setBoxes] = useState([])
@@ -61,7 +68,11 @@ export default function useVisionBoxes() {
   const [ctrlError, setCtrlError] = useState('')
   const [cameraError, setCameraError] = useState('')
   const [cameraOn, setCameraOn] = useState(false)
+  const [focusRequest, setFocusRequest] = useState(null)
   const producerRef = useRef(null)
+  const boxesRef = useRef(boxes)
+  boxesRef.current = boxes
+  const askFocus = (id) => setFocusRequest(r => ({ id, n: (r?.n || 0) + 1 }))
 
   // ── Vision-control socket ──────────────────────────────
   useEffect(() => {
@@ -119,6 +130,7 @@ export default function useVisionBoxes() {
           mime: msg.mime || '',
           autoplay: msg.autoplay !== false,
           durationS: Number(msg.duration_s) || 0,
+          voice: (label || '') === NANDI_VOICE_LABEL,
         }
         setBoxes(prev => {
           const existing = wid ? prev.find(b => b.id === wid) : null
@@ -133,9 +145,11 @@ export default function useVisionBoxes() {
       } else if (action === 'show_audio_stream' && stream_id) {
         // A live microphone on the audio server, heard over WebRTC.
         const id = wid || `audio_stream_${stream_id}`
+        if (boxesRef.current.some(b => b.id === id)) askFocus(id)
         setBoxes(prev => withAudioStream(prev, id, stream_id, label))
       } else if (action === 'show_stream') {
         const id = wid || `stream_${stream_id}`
+        if (boxesRef.current.some(b => b.id === id)) askFocus(id)
         setBoxes(prev => (prev.some(b => b.id === id) ? prev
           : [...prev, { id, type: 'stream', label: label || stream_id, streamId: stream_id, at: Date.now() }]))
       } else if (action === 'close' && (wid || file_id)) {
@@ -182,10 +196,13 @@ export default function useVisionBoxes() {
       : [...prev, { id, type: 'stream', label: label || streamId, streamId, at: Date.now() }]))
   }, [])
 
-  // A live audio card opened from the live audio panel.
+  // A live audio card opened from the live audio panel (one already open is
+  // brought to the front).
   const openAudioStream = useCallback((streamId, label) => {
     if (!streamId) return
-    setBoxes(prev => withAudioStream(prev, `audio_stream_${streamId}`, streamId, label))
+    const id = `audio_stream_${streamId}`
+    if (boxesRef.current.some(b => b.id === id)) askFocus(id)
+    setBoxes(prev => withAudioStream(prev, id, streamId, label))
   }, [])
 
   const startCamera = useCallback(async () => {
@@ -228,8 +245,8 @@ export default function useVisionBoxes() {
   // functions in their own useCallback / useMemo deps, and a fresh object
   // every render rebuilt them all (and everything that depended on them).
   return useMemo(() => ({
-    boxes, ctrlConnected, ctrlError, cameraError, cameraOn, clearCameraError,
+    boxes, ctrlConnected, ctrlError, cameraError, cameraOn, clearCameraError, focusRequest,
     close, closeAll, openStream, openAudioStream, startCamera, stopCamera, toggleCamera,
-  }), [boxes, ctrlConnected, ctrlError, cameraError, cameraOn, clearCameraError,
+  }), [boxes, ctrlConnected, ctrlError, cameraError, cameraOn, clearCameraError, focusRequest,
     close, closeAll, openStream, openAudioStream, startCamera, stopCamera, toggleCamera])
 }

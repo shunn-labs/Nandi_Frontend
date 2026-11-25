@@ -3,7 +3,7 @@ import Attachment from './Attachment.jsx'
 import MicWave from './MicWave.jsx'
 import { IconPaperclip, IconMic, IconSend, IconVoice } from './Icons.jsx'
 import { startRecording, stopRecording, cancelRecording } from '../lib/audioRecorder.js'
-import { stop as stopTts, getIsPlaying } from '../lib/ttsPlayer.js'
+import { stopSpeech, isSpeechBusy } from '../lib/speechBus.js'
 
 // The recorder's RMS runs small (speech is ~0.02–0.2); this maps it to 0..1.
 const MIC_GAIN = 5
@@ -18,12 +18,15 @@ const clock = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
  * stops by itself on a pause. While it records, the text box gives way to a
  * dotted wave of your voice, the time, and ✕ to throw the recording away.
  *
- * Typing or starting the mic while Nandi is speaking cuts the voice off.
+ * Typing or starting the mic while Nandi is speaking (or about to) cuts her
+ * voice off — her clips included. The mic button then listens at once; the
+ * globe and Space only stop her (ChatView).
  *
  * onMicPhase(phase)         'idle' | 'recording' | 'transcribing'
  * onVoiceMode()             opens voice mode (a live spoken conversation); the
  *                           mic button is one-shot dictation into this bar
- * ref: focus(), toggleMic(), startMic(), stopMic(), cancelMic()
+ * ref: focus(), toggleMic(), startMic(), stopMic(), cancelMic(),
+ *      send() → true when something was sent (Enter pressed outside the text box)
  */
 const ChatInput = forwardRef(function ChatInput({
   onSend,
@@ -82,8 +85,8 @@ const ChatInput = forwardRef(function ChatInput({
 
   const handleSend = useCallback(() => {
     const trimmed = text.trim()
-    if (!trimmed && attachments.length === 0) return
-    if (uploading) return
+    if (!trimmed && attachments.length === 0) return false
+    if (uploading) return false
 
     onSend(trimmed, attachments)
     setText('')
@@ -92,6 +95,7 @@ const ChatInput = forwardRef(function ChatInput({
 
     // Reset textarea height
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
+    return true
   }, [text, attachments, uploading, onSend])
 
   const handleKeyDown = (e) => {
@@ -104,7 +108,7 @@ const ChatInput = forwardRef(function ChatInput({
   // ── Mic (STT) ───────────────────────────────────────────
   const startMic = async () => {
     if (phaseRef.current !== 'idle') return
-    if (getIsPlaying()) stopTts()
+    if (isSpeechBusy()) stopSpeech()
     setMicError('')
     levelRef.current = 0
     setPhase('recording')
@@ -156,9 +160,12 @@ const ChatInput = forwardRef(function ChatInput({
   // Read by the parent (core click, hold Space, Esc) through the ref. A ref
   // keeps the latest handlers, which close over the current state.
   const micRef = useRef(null)
-  micRef.current = { startMic, stopMic, cancelMic, toggleMic }
+  micRef.current = { startMic, stopMic, cancelMic, toggleMic, send: handleSend }
   useImperativeHandle(ref, () => ({
     focus: () => textareaRef.current?.focus(),
+    // A transcript waiting in the box (auto-send off) goes with Enter even
+    // though the focus is not in the box (ChatView's key handler calls this).
+    send: () => (phaseRef.current === 'idle' ? micRef.current.send() : false),
     toggleMic: () => micRef.current.toggleMic(),
     startMic: () => micRef.current.startMic(),
     stopMic: () => micRef.current.stopMic(),
@@ -167,7 +174,7 @@ const ChatInput = forwardRef(function ChatInput({
 
   const handleChange = (e) => {
     // Typing while Nandi talks means you want to cut in.
-    if (getIsPlaying()) stopTts()
+    if (isSpeechBusy()) stopSpeech()
     setText(e.target.value)
   }
 
@@ -197,7 +204,12 @@ const ChatInput = forwardRef(function ChatInput({
           title={recording ? 'Stop and send' : transcribing ? 'Transcribing…' : 'Talk (or hold Space)'}
           aria-label={recording ? 'Stop recording' : 'Talk'}
           aria-pressed={recording}
-          onClick={toggleMic}
+          onClick={(e) => {
+            // After a mouse click the button gives the focus up, so a later Enter
+            // sends the transcript instead of clicking the mic again.
+            if (e.detail > 0) e.currentTarget.blur()
+            toggleMic()
+          }}
           disabled={transcribing}
         >
           <IconMic />

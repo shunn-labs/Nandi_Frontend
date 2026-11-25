@@ -32,7 +32,14 @@ const TTS_MESSAGES = {
 }
 
 let playback = null        // the current utterance (see speak)
-let isPlaying = false
+let isPlaying = false      // audio is coming out
+// From the moment speak() is called until the utterance ends or is cut off —
+// including while the request is still on its way, when nothing plays yet but
+// Nandi is about to talk. Interrupting (mic, Space, globe, typing) checks this.
+let isBusy = false
+// A context the browser has not let start (no user gesture yet) is given this
+// long to resume before the utterance is given up as blocked.
+const RESUME_WAIT_MS = 600
 
 // ── Monitor output volume (feeds the core) ───────────────
 
@@ -108,6 +115,7 @@ function finish(p) {
   if (playback !== p) return
   playback = null
   isPlaying = false
+  isBusy = false
   cancelAnimationFrame(p.rafId)
   p.onVolume?.(0)
   closeContext(p.ctx)
@@ -122,8 +130,11 @@ function finish(p) {
  * last chunk has been scheduled; `onEnd` runs exactly once: when playback is
  * over, has failed, or was cut off by stop() (or by the next speak()), so a
  * caller tracking "is Nandi speaking" hears about an interruption too.
+ *
+ * options.onBlocked(): the browser would not start audio without a tap on the
+ * page (the utterance then ends instead of hanging, silent, for ever).
  */
-export async function speak(text, onVolume, onEnd) {
+export async function speak(text, onVolume, onEnd, { onBlocked } = {}) {
   stop() // stop any current playback
 
   const { emotion, text: words } = splitEmotionTag(text)
@@ -144,6 +155,7 @@ export async function speak(text, onVolume, onEnd) {
     onEnd: onEnd || null,
   }
   playback = p
+  isBusy = true
 
   if (!body.text) {
     finish(p)
@@ -168,11 +180,26 @@ export async function speak(text, onVolume, onEnd) {
     p.rate = parseInt(res.headers.get('X-Sample-Rate'), 10) || DEFAULT_RATE
     console.debug(`[tts] streaming ${p.rate} Hz from ${res.headers.get('X-Engine') || 'unknown'} engine`)
 
-    // Created only once there is audio to play, as before — an AudioContext
-    // made without a recent user gesture may start suspended; resume() is
-    // harmless when it is not.
+    // Created only once there is audio to play, as before. An AudioContext
+    // made without a user gesture on the page starts suspended and never
+    // plays: no buffer would ever end, so the utterance — and "Nandi is
+    // speaking" — would hang. It gets a moment to resume; if it doesn't, the
+    // utterance ends and the caller hears it was blocked.
     p.ctx = new (window.AudioContext || window.webkitAudioContext)()
-    p.ctx.resume?.().catch(() => {})
+    if (p.ctx.state === 'suspended' && p.ctx.resume) {
+      await Promise.race([
+        p.ctx.resume().catch(() => {}),
+        new Promise(resolve => setTimeout(resolve, RESUME_WAIT_MS)),
+      ])
+    }
+    if (playback !== p) return
+    if (p.ctx.state === 'suspended') {
+      console.warn('[tts] the browser blocked audio until the page is tapped')
+      p.abort.abort()
+      finish(p)
+      onBlocked?.()
+      return
+    }
     p.analyser = p.ctx.createAnalyser()
     p.analyser.fftSize = 2048
     p.levelData = new Uint8Array(p.analyser.fftSize)
@@ -230,6 +257,7 @@ export function stop() {
   const p = playback
   playback = null
   isPlaying = false
+  isBusy = false
   if (!p) return
 
   p.abort.abort()
@@ -247,4 +275,9 @@ export function stop() {
 
 export function getIsPlaying() {
   return isPlaying
+}
+
+/** True from speak() until the utterance is over or stopped (loading included). */
+export function getIsBusy() {
+  return isBusy
 }
