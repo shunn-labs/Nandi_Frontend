@@ -1,10 +1,11 @@
-import React, { useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import LogPanel from './LogPanel.jsx'
 import Transcript from './Transcript.jsx'
 import ActivityCard from './ActivityCard.jsx'
 import FilesPanel from './FilesPanel.jsx'
 import TasksPanel from './TasksPanel.jsx'
 import useCameras from '../hooks/useCameras.js'
+import { getMediaConfig } from '../lib/mediaHub.js'
 
 const TABS = [
   { key: 'transcript', label: 'Transcript' },
@@ -31,6 +32,15 @@ export default function Console({
 }) {
   const [latestLog, setLatestLog] = useState('')
   const cams = useCameras(open && tab === 'devices')
+  // With the media hub usable, a camera on JPEG / WebRTC is on an old path (worth
+  // flagging); without it, JPEG is simply how cameras are sent.
+  const [hubUsable, setHubUsable] = useState(false)
+  useEffect(() => {
+    if (!(open && tab === 'devices')) return undefined
+    let live = true
+    getMediaConfig().then((c) => { if (live) setHubUsable(Boolean(c.usable)) })
+    return () => { live = false }
+  }, [open, tab, cams.cameras])
   const [height, setHeight] = useState(220)
   const drag = useRef(null)
 
@@ -96,7 +106,14 @@ export default function Console({
               <tr>
                 <td>This device's camera</td>
                 <td className={vision.cameraOn ? 'devices__on' : 'devices__off'}>{vision.cameraOn ? 'sharing' : 'off'}</td>
-                <td><button className="devices__btn" onClick={vision.toggleCamera}>{vision.cameraOn ? 'Stop sharing' : 'Share camera'}</button></td>
+                <td>
+                  <button className="devices__btn" onClick={vision.toggleCamera}>{vision.cameraOn ? 'Stop sharing' : 'Share camera'}</button>
+                  {vision.cameraOn && vision.cameraPath && (
+                    <span className={`devices__note${vision.cameraPath.failed ? ' devices__warn' : ''}`}>
+                      {ownCameraText(vision.cameraPath)}
+                    </span>
+                  )}
+                </td>
               </tr>
               {deviceRows.map(d => (
                 <tr key={d.key}><td>{d.name}</td><td className="devices__on">{d.kind} online</td><td>{d.detail}</td></tr>
@@ -122,6 +139,10 @@ export default function Console({
                       <td className={c.live ? 'devices__on' : 'devices__off'}>
                         {c.live ? 'live' : c.last_seen_s_ago != null ? `seen ${ago(c.last_seen_s_ago)} ago` : 'offline'}
                       </td>
+                      <td className={hubUsable && c.live && c.transport && c.transport !== 'hub' ? 'devices__warn' : 'devices__off'}
+                        title={TRANSPORT_HELP[c.transport] || ''}>
+                        {c.live ? transportText(c, hubUsable) : ''}
+                      </td>
                       <td>
                         <button className="devices__btn" onClick={() => vision.openStream(c.id, c.name)}
                           title={c.live ? 'Show this camera' : 'Opens and waits until the camera starts sending'}>
@@ -145,6 +166,32 @@ function ago(s) {
   if (s < 90) return `${Math.round(s)} s`
   if (s < 5400) return `${Math.round(s / 60)} min`
   return `${Math.round(s / 3600)} h`
+}
+
+// How a camera reaches the vision server (the server's `transport` per camera).
+// Anything but the hub is an old, slower path — worth seeing at a glance.
+const TRANSPORT_HELP = {
+  hub: "Media hub: the camera's own video (WebRTC / RTSP), full quality and frame rate",
+  jpeg: 'JPEG frames over WebSocket: the old path (about 10 fps). A page not reloaded since the media hub release, or a network that cannot reach the hub',
+  webrtc: 'WebRTC through the vision server: the old path (e.g. the Ubuntu PC before its media-hub release)',
+}
+
+function transportText(c, hubUsable) {
+  if (c.transport === 'hub') {
+    const m = c.media || {}
+    return ['hub', m.codec, m.width && m.height ? `${m.width}×${m.height}` : ''].filter(Boolean).join(' · ')
+  }
+  const old = hubUsable ? ' · old path' : ''
+  if (c.transport === 'jpeg') return `JPEG${old}`
+  if (c.transport === 'webrtc') return `WebRTC${old}`
+  return ''
+}
+
+/** This device's camera: which path it took, and why not the hub when it didn't. */
+function ownCameraText(p) {
+  const size = p.width && p.height ? `${p.width}×${p.height}${p.fps ? ` @${p.fps}` : ''}` : ''
+  if (p.path === 'hub') return `via media hub${size ? ` · ${size}` : ''}`
+  return `via JPEG frames${size ? ` · ${size}` : ''} — ${p.reason}`
 }
 
 /** Opens a stream that is not in the list, by its id (e.g. pc_cam). */

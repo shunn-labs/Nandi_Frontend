@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 import Login from './components/Login.jsx'
 import DeviceSetup from './components/DeviceSetup.jsx'
 import ChatView from './components/ChatView.jsx'
+import UpdateBanner from './components/UpdateBanner.jsx'
 import { getDeviceName } from './lib/clientId.js'
 import { disconnect, resetConnection } from './lib/wsAdapter.js'
 import { disconnect as disconnectVisionControl } from './lib/visionControl.js'
@@ -57,16 +58,15 @@ export default function App() {
 
   if (loading) return null
 
-  // Step 1: Login
-  if (!isLoggedIn) {
-    return <Login onLogin={handleLogin} />
-  }
+  // Step 1: Login · Step 2: device setup (only if no device cookie) · Step 3: main chat view
+  const view = !isLoggedIn ? <Login onLogin={handleLogin} />
+    : !deviceId ? <DeviceSetup onDeviceSet={handleDeviceSet} />
+    : <ChatView deviceId={deviceId} onLogout={handleLogout} />
 
-  // Step 2: Device setup (only if no device cookie)
-  if (!deviceId) {
-    return <DeviceSetup onDeviceSet={handleDeviceSet} />
-  }
-
-  // Step 3: Main chat view
-  return <ChatView deviceId={deviceId} onLogout={handleLogout} />
+  return (
+    <>
+      <UpdateBanner />
+      {view}
+    </>
+  )
 }

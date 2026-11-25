@@ -69,6 +69,10 @@ export default function useVisionBoxes() {
   const [ctrlError, setCtrlError] = useState('')
   const [cameraError, setCameraError] = useState('')
   const [cameraOn, setCameraOn] = useState(false)
+  // How this device's camera reaches the vision server: { path: 'hub' | 'jpeg',
+  // reason (why not the hub), failed (the hub was offered but unusable from
+  // here), width, height, fps (what the camera delivers) }.
+  const [cameraPath, setCameraPath] = useState(null)
   const [focusRequest, setFocusRequest] = useState(null)
   const producerRef = useRef(null)
   const boxesRef = useRef(boxes)
@@ -177,6 +181,7 @@ export default function useVisionBoxes() {
       producerRef.current = null
     }
     setCameraOn(false)
+    setCameraPath(null)
   }
 
   const close = useCallback((id) => {
@@ -217,18 +222,28 @@ export default function useVisionBoxes() {
         callbacks: { onLog: (text, type) => console.log(`[producer] ${text}`, type) },
       }
       // The media hub (WebRTC, the camera's own quality) when the vision server
-      // offers it; otherwise, or if this network can't reach it, JPEG frames.
+      // offers it; otherwise, or if this network can't reach it, JPEG frames —
+      // telling the server why, so the fallback is visible there too.
       let producer = null
-      if ((await getMediaConfig()).usable) {
+      let reason = ''
+      if ((await getMediaConfig(true)).usable) {
         try {
           producer = await publishCamera(opts)
         } catch (err) {
           if (err?.name === 'NotAllowedError' || err?.name === 'NotFoundError') throw err
+          reason = err?.message || String(err) || 'publish failed'
           console.warn('[vision] media hub publish failed, using JPEG frames:', err)
         }
       }
-      if (!producer) producer = await startFrameProducer(opts)
+      if (!producer) producer = await startFrameProducer({ ...opts, fallback: reason })
       producerRef.current = producer
+      const s = producer.getStream()?.getVideoTracks?.()[0]?.getSettings?.() || {}
+      setCameraPath({
+        path: producer.path || (producer.transport === 'webrtc' ? 'hub' : 'jpeg'),
+        reason: producer.path === 'hub' ? '' : (reason || 'the vision server has no media hub'),
+        failed: Boolean(reason),            // the hub was offered but could not be used
+        width: s.width || 0, height: s.height || 0, fps: Math.round(s.frameRate || 0),
+      })
       const id = `camera_${streamId}`
       setBoxes(prev => (prev.some(b => b.id === id) ? prev
         : [...prev, { id, type: 'camera', label: 'My camera', streamId, producer, at: Date.now() }]))
@@ -258,8 +273,8 @@ export default function useVisionBoxes() {
   // functions in their own useCallback / useMemo deps, and a fresh object
   // every render rebuilt them all (and everything that depended on them).
   return useMemo(() => ({
-    boxes, ctrlConnected, ctrlError, cameraError, cameraOn, clearCameraError, focusRequest,
+    boxes, ctrlConnected, ctrlError, cameraError, cameraOn, cameraPath, clearCameraError, focusRequest,
     close, closeAll, openStream, openAudioStream, startCamera, stopCamera, toggleCamera,
-  }), [boxes, ctrlConnected, ctrlError, cameraError, cameraOn, clearCameraError, focusRequest,
+  }), [boxes, ctrlConnected, ctrlError, cameraError, cameraOn, cameraPath, clearCameraError, focusRequest,
     close, closeAll, openStream, openAudioStream, startCamera, stopCamera, toggleCamera])
 }

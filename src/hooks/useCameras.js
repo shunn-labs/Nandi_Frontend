@@ -8,7 +8,9 @@ const REFRESH_MS = 5000
  * with its stream id, a friendly name and whether it is sending right now.
  * Polled only while `active` (the Devices tab is open).
  *
- * camera: { id, name, type, location, live, owner_client, last_seen_s_ago }
+ * camera: { id, name, type, location, live, owner_client, last_seen_s_ago,
+ *           transport: 'hub' | 'jpeg' | 'webrtc' | null, media: { codec, width, height } | null }
+ *   transport: how a live camera reaches the server (anything but 'hub' is an old path)
  */
 export default function useCameras(active) {
   const [cameras, setCameras] = useState([])
