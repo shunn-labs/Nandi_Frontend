@@ -51,6 +51,7 @@ let lastError = ''
 const UI_ACTIONS = new Set([
   'prompt', 'prompt_closed', 'prompt_invalid', 'activity', 'activity_stop_ack',
   'devices', 'event', 'ui_snapshot', 'notification', 'notifications', 'tasks_changed',
+  'close_cards',   // "remove this image" — the brain's screen__close tool (ChatView resolves it)
 ])
 const uiListeners = new Set()
 

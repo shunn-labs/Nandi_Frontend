@@ -25,7 +25,8 @@ const clock = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
  * onMicPhase(phase)         'idle' | 'recording' | 'transcribing'
  * onVoiceMode()             opens voice mode (a live spoken conversation); the
  *                           mic button is one-shot dictation into this bar
- * ref: focus(), toggleMic(), startMic(), stopMic(), cancelMic()
+ * ref: focus(), toggleMic(), startMic(), stopMic(), cancelMic(),
+ *      send() → true when something was sent (Enter pressed outside the text box)
  */
 const ChatInput = forwardRef(function ChatInput({
   onSend,
@@ -84,8 +85,8 @@ const ChatInput = forwardRef(function ChatInput({
 
   const handleSend = useCallback(() => {
     const trimmed = text.trim()
-    if (!trimmed && attachments.length === 0) return
-    if (uploading) return
+    if (!trimmed && attachments.length === 0) return false
+    if (uploading) return false
 
     onSend(trimmed, attachments)
     setText('')
@@ -94,6 +95,7 @@ const ChatInput = forwardRef(function ChatInput({
 
     // Reset textarea height
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
+    return true
   }, [text, attachments, uploading, onSend])
 
   const handleKeyDown = (e) => {
@@ -158,9 +160,12 @@ const ChatInput = forwardRef(function ChatInput({
   // Read by the parent (core click, hold Space, Esc) through the ref. A ref
   // keeps the latest handlers, which close over the current state.
   const micRef = useRef(null)
-  micRef.current = { startMic, stopMic, cancelMic, toggleMic }
+  micRef.current = { startMic, stopMic, cancelMic, toggleMic, send: handleSend }
   useImperativeHandle(ref, () => ({
     focus: () => textareaRef.current?.focus(),
+    // A transcript waiting in the box (auto-send off) goes with Enter even
+    // though the focus is not in the box (ChatView's key handler calls this).
+    send: () => (phaseRef.current === 'idle' ? micRef.current.send() : false),
     toggleMic: () => micRef.current.toggleMic(),
     startMic: () => micRef.current.startMic(),
     stopMic: () => micRef.current.stopMic(),
@@ -199,7 +204,12 @@ const ChatInput = forwardRef(function ChatInput({
           title={recording ? 'Stop and send' : transcribing ? 'Transcribing…' : 'Talk (or hold Space)'}
           aria-label={recording ? 'Stop recording' : 'Talk'}
           aria-pressed={recording}
-          onClick={toggleMic}
+          onClick={(e) => {
+            // After a mouse click the button gives the focus up, so a later Enter
+            // sends the transcript instead of clicking the mic again.
+            if (e.detail > 0) e.currentTarget.blur()
+            toggleMic()
+          }}
           disabled={transcribing}
         >
           <IconMic />
