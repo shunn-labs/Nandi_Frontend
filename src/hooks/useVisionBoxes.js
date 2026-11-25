@@ -7,6 +7,7 @@ import {
   getMyClientId,
 } from '../lib/visionControl.js'
 import { startFrameProducer } from '../lib/visionFrames.js'
+import { getMediaConfig, publishCamera } from '../lib/mediaHub.js'
 import { absoluteUrl } from '../lib/filesApi.js'
 
 let boxCounter = 0
@@ -210,11 +211,23 @@ export default function useVisionBoxes() {
     setCameraError('')
     const streamId = `${getMyClientId()}_camera`
     try {
-      const producer = await startFrameProducer({
+      const opts = {
         streamId,
         facingMode: 'environment',
         callbacks: { onLog: (text, type) => console.log(`[producer] ${text}`, type) },
-      })
+      }
+      // The media hub (WebRTC, the camera's own quality) when the vision server
+      // offers it; otherwise, or if this network can't reach it, JPEG frames.
+      let producer = null
+      if ((await getMediaConfig()).usable) {
+        try {
+          producer = await publishCamera(opts)
+        } catch (err) {
+          if (err?.name === 'NotAllowedError' || err?.name === 'NotFoundError') throw err
+          console.warn('[vision] media hub publish failed, using JPEG frames:', err)
+        }
+      }
+      if (!producer) producer = await startFrameProducer(opts)
       producerRef.current = producer
       const id = `camera_${streamId}`
       setBoxes(prev => (prev.some(b => b.id === id) ? prev
