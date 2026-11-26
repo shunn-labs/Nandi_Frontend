@@ -240,6 +240,13 @@ function MediaBox({ box, onCapture, onAspect }) {
   const facingLabel = box.type === 'camera' && box.producer
     ? (box.producer.getFacingMode() === 'environment' ? 'back' : 'front')
     : null
+  // Which path this device's camera took: the media hub, or the JPEG fallback.
+  const cameraPath = box.type === 'camera' && box.producer
+    ? (box.producer.path || (box.producer.transport === 'webrtc' ? 'hub' : 'jpeg'))
+    : null
+  const pathTitle = cameraPath === 'hub' ? 'Sent through the media hub at the camera\'s own quality'
+    : cameraPath === 'jpeg' ? `Sent as JPEG frames (slower): ${box.producer?.fallback || 'the vision server has no media hub'}`
+    : undefined
 
   return (
     <div className="vbox">
@@ -266,8 +273,8 @@ function MediaBox({ box, onCapture, onAspect }) {
       )}
 
       {box.type !== 'frame' && (
-        <span className={`vbox__state vbox__state--${state}`}>
-          {state === 'live' ? (box.type === 'camera' ? `LIVE · ${facingLabel}` : 'LIVE') : state}
+        <span className={`vbox__state vbox__state--${state}`} title={pathTitle}>
+          {state === 'live' ? (box.type === 'camera' ? `LIVE · ${cameraPath} · ${facingLabel}` : 'LIVE') : state}
         </span>
       )}
 

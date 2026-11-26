@@ -119,7 +119,14 @@ async function exchange(url, pc, { startKbps = 0 } = {}) {
   const headers = { 'Content-Type': 'application/sdp' }
   const key = mediaKey()
   if (key) headers.Authorization = `Bearer ${key}`
-  const r = await fetch(url, { method: 'POST', headers, body: pc.localDescription.sdp })
+  let r
+  try {
+    r = await fetch(url, { method: 'POST', headers, body: pc.localDescription.sdp })
+  } catch (err) {
+    // DNS, TLS or the network: name the host, so the reason means something
+    // where it is shown (this device's Devices panel, the vision server's log).
+    throw new Error(`could not reach the media hub at ${new URL(url).host} (${err.message})`)
+  }
   if (r.status !== 201 && r.status !== 200) {
     const err = new Error(`media hub answered ${r.status}`)
     err.status = r.status
@@ -147,11 +154,18 @@ function connected(pc, timeoutMs) {
   })
 }
 
-function endSession(location) {
-  if (!location) return
+/**
+ * End a WHIP/WHEP session: DELETE it first, then close the peer connection.
+ * Closing first makes the hub drop the session on its own, so the DELETE
+ * that follows is answered 404 (and the browser logs it as an error).
+ */
+function hangUp(location, pc) {
+  const shut = () => { try { pc?.close() } catch { /* already closed */ } }
+  if (!location) { shut(); return }
   const key = mediaKey()
-  fetch(location, { method: 'DELETE', headers: key ? { Authorization: `Bearer ${key}` } : {} })
+  const req = fetch(location, { method: 'DELETE', headers: key ? { Authorization: `Bearer ${key}` } : {} })
     .catch(() => {})
+  Promise.race([req, new Promise(r => setTimeout(r, 1000))]).then(shut)
 }
 
 // ════════════════════════ PUBLISHER ════════════════════════
@@ -206,11 +220,9 @@ export async function publishCamera({ streamId, facingMode = 'environment', call
 
   async function connect(throwOnFail = false) {
     if (closed) return
-    const old = pc
+    hangUp(location, pc)
     pc = null
-    endSession(location)
     location = null
-    try { old?.close() } catch { /* already closed */ }
     const me = new RTCPeerConnection({ iceServers: cfg.ice_servers || [], bundlePolicy: 'max-bundle' })
     pc = me
     const track = currentStream.getVideoTracks()[0]
@@ -233,16 +245,15 @@ export async function publishCamera({ streamId, facingMode = 'environment', call
     try {
       onState?.('connecting')
       const res = await exchange(url, me, { startKbps: Math.round(bitrateFor(track) * 0.6 / 1000) })
-      if (pc !== me) { endSession(res.location); return }
+      if (pc !== me) { hangUp(res.location, me); return }
       location = res.location
       // First attempt: the SDP exchange worked, but media also has to flow (UDP or
       // TCP to the hub's WebRTC port may be blocked on this network).
       if (throwOnFail) await connected(me, CONNECT_TIMEOUT_MS)
     } catch (err) {
       if (throwOnFail) {
-        endSession(location)
+        hangUp(location, me)
         location = null
-        try { me.close() } catch { /* closed */ }
         pc = null
         throw err
       }
@@ -286,11 +297,10 @@ export async function publishCamera({ streamId, facingMode = 'environment', call
   function close() {
     closed = true
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
-    endSession(location)
+    currentStream?.getTracks().forEach(t => t.stop())     // the camera goes off right away
+    hangUp(location, pc)
     location = null
-    try { pc?.close() } catch { /* already closed */ }
     pc = null
-    currentStream?.getTracks().forEach(t => t.stop())
   }
 
   async function getStats() {
@@ -309,6 +319,7 @@ export async function publishCamera({ streamId, facingMode = 'environment', call
 
   return {
     transport: 'webrtc',
+    path: 'hub',
     getStream: () => currentStream,
     getFacingMode: () => currentFacing,
     switchCamera,
@@ -348,11 +359,9 @@ export function playStream(streamId, video, { whep, onState } = {}) {
   async function connect() {
     if (closed) return
     clearTimers()
-    const old = pc
+    hangUp(location, pc)
     pc = null
-    endSession(location)
     location = null
-    try { old?.close() } catch { /* already closed */ }
 
     const cfg = await getMediaConfig()
     const url = whep || (cfg.whep || '').replace('{stream}', encodeURIComponent(streamId))
@@ -387,7 +396,7 @@ export function playStream(streamId, video, { whep, onState } = {}) {
     try {
       onState?.('connecting')
       const res = await exchange(url, me)
-      if (pc !== me) { endSession(res.location); return }
+      if (pc !== me) { hangUp(res.location, me); return }
       location = res.location
     } catch (err) {
       if (pc !== me) return
@@ -405,9 +414,8 @@ export function playStream(streamId, video, { whep, onState } = {}) {
     close() {
       closed = true
       clearTimers()
-      endSession(location)
+      hangUp(location, pc)
       location = null
-      try { pc?.close() } catch { /* already closed */ }
       pc = null
       if (video) video.srcObject = null
     },

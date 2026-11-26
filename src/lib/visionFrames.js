@@ -70,7 +70,7 @@ function toBlob(canvas, quality) {
  * from a hidden <video> onto a canvas and sent as JPEG at the rate the server
  * asks for.
  */
-export async function startFrameProducer({ streamId, facingMode = 'environment', callbacks = {} } = {}) {
+export async function startFrameProducer({ streamId, facingMode = 'environment', callbacks = {}, fallback = '' } = {}) {
   const { onState, onLog } = callbacks
   const log = (text, type = 'info') => onLog?.(text, type)
 
@@ -179,7 +179,11 @@ export async function startFrameProducer({ streamId, facingMode = 'environment',
 
   function connect() {
     if (closed) return
+    // `fallback`: why the media hub was not used (the caller tried it first). The
+    // server logs it, so a camera stuck on JPEG frames can be told apart from an
+    // old page that never tried the hub.
     const url = getVisionFramesUrl(streamId)
+      + (fallback ? `?fallback=${encodeURIComponent(String(fallback).slice(0, 200))}` : '')
     log(`Producer connecting → ${url}`, 'info')
     let sock
     try { sock = new WebSocket(url) } catch (err) {
@@ -292,6 +296,9 @@ export async function startFrameProducer({ streamId, facingMode = 'environment',
   connect()
 
   return {
+    transport: 'ws',
+    path: 'jpeg',
+    fallback,
     getStream: () => currentStream,
     getFacingMode: () => currentFacing,
     switchCamera,
