@@ -11,6 +11,7 @@
   "dependencies": {
     "@pipecat-ai/client-js": "~1.16.0",
     "@pipecat-ai/small-webrtc-transport": "~1.11.2",
+    "onnxruntime-web": "1.20.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
