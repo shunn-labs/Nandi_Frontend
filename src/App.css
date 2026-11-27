@@ -1685,3 +1685,27 @@ kbd {
 @media (prefers-reduced-motion: reduce) {
   .voice-mode__dot, .abox__dot, .topbar__notice i { animation: none !important; }
 }
+
+/* ── "Nandi was updated" (buildCheck.js) ── */
+.update-banner {
+  position: fixed; top: 10px; left: 50%; translate: -50% 0; z-index: 60;
+  display: flex; align-items: center; gap: 10px;
+  max-width: calc(100% - 32px); padding: 6px 6px 6px 14px;
+  background: var(--glass); border: 1px solid var(--border); border-radius: var(--radius-md);
+  backdrop-filter: blur(12px); box-shadow: var(--shadow);
+  font-size: 13px; color: var(--text-primary);
+}
+.update-banner__btn {
+  padding: 4px 12px; border: 1px solid var(--border-light); border-radius: 6px;
+  background: none; color: var(--text-primary); font: inherit; cursor: pointer; white-space: nowrap;
+}
+.update-banner__btn:hover { background: var(--hover); }
+.update-banner__close {
+  width: 26px; height: 26px; border: none; border-radius: 6px; background: none;
+  color: var(--text-muted); font-size: 16px; cursor: pointer;
+}
+.update-banner__close:hover { color: var(--text-primary); background: var(--hover); }
+
+/* Which path a camera is on (Devices panel) */
+.devices__note { color: var(--text-muted); margin-left: 10px; }
+.devices__warn { color: var(--amber) !important; }
