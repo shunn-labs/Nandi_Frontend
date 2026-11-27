@@ -30,6 +30,7 @@ import {
 } from '../lib/wsAdapter.js'
 import { speak } from '../lib/ttsPlayer.js'
 import { stopSpeech, isSpeechBusy, onClipTalking } from '../lib/speechBus.js'
+import { VOICE_WAKE_EVENT } from '../lib/voicePrefs.js'
 import { playChime } from '../lib/chime.js'
 import { onUiFrame, sendDisplay } from '../lib/visionControl.js'
 import { markNotificationsRead } from '../lib/filesApi.js'
@@ -904,9 +905,10 @@ export default function ChatView({ onLogout }) {
     if (!voiceOpenRef.current) chatInputRef.current?.toggleMic()
   }, [])
   // The globe. While Nandi talks (or is about to) a tap only stops her — the
-  // next tap listens. Otherwise it toggles dictation, as the mic does.
+  // next tap listens. Otherwise it toggles dictation, as the mic does. In
+  // voice mode it wakes Nandi, like saying "hey Nandi".
   const globeTap = useCallback(() => {
-    if (voiceOpenRef.current) return
+    if (voiceOpenRef.current) { window.dispatchEvent(new Event(VOICE_WAKE_EVENT)); return }
     if (isSpeechBusy()) { stopSpeech(); return }
     chatInputRef.current?.toggleMic()
   }, [])
@@ -925,7 +927,7 @@ export default function ChatView({ onLogout }) {
     { label: 'Logs', hint: 'L', onSelect: () => openConsole('logs') },
     { label: 'Files', onSelect: () => openConsole('files') },
     { label: 'Scheduled tasks', onSelect: () => openConsole('tasks') },
-    { label: voiceOpen ? 'End voice mode' : 'Voice mode', onSelect: voiceOpen ? closeVoice : openVoice },
+    { label: voiceOpen ? 'End voice mode' : 'Voice mode', hint: 'Ctrl H', onSelect: voiceOpen ? closeVoice : openVoice },
     { label: 'Live audio', onSelect: openStreams },
     { label: vision.cameraOn ? 'Stop sharing camera' : 'Share camera', onSelect: vision.toggleCamera },
     { label: ttsEnabled ? 'Captions only' : 'Turn voice on', onSelect: () => setTts(!ttsEnabled) },
@@ -940,7 +942,7 @@ export default function ChatView({ onLogout }) {
     { label: 'Ask Nandi', hint: '/', onSelect: () => chatInputRef.current?.focus() },
     { label: 'Talk', hint: 'hold Space', onSelect: toggleMic },
     { label: 'Stop Nandi talking', hint: 'Space', onSelect: stopSpeech },
-    { label: voiceOpen ? 'End voice mode' : 'Voice mode: a live conversation', onSelect: voiceOpen ? closeVoice : openVoice },
+    { label: voiceOpen ? 'End voice mode' : 'Voice mode: say “Hey Nandi”', hint: 'Ctrl H', onSelect: voiceOpen ? closeVoice : openVoice },
     { label: 'Open live audio streams', onSelect: openStreams },
     { label: micShare.on ? 'Stop sharing this microphone' : 'Share this microphone', onSelect: () => toggleMicShare(!micShare.on) },
     { label: 'Open settings', onSelect: () => setSettingsOpen(true) },
@@ -971,7 +973,7 @@ export default function ChatView({ onLogout }) {
   // Read through a ref so the listener is attached once.
   const keysRef = useRef(null)
   keysRef.current = { ambient, paletteOpen, settingsOpen, speaking, clearStage, stopAllJobs, cycleTheme, clearConversation,
-                      consoleOpen, consoleTab }
+                      consoleOpen, consoleTab, openVoice, closeVoice }
 
   useEffect(() => {
     // Hold Space to talk: key-down starts, key-up (or leaving the window with
@@ -985,6 +987,15 @@ export default function ChatView({ onLogout }) {
     const onKeyDown = (e) => {
       const k = keysRef.current
       const mod = e.ctrlKey || e.metaKey
+      // Ctrl+H: voice mode on/off, from anywhere (also while typing, in ambient
+      // mode, over the palette). Ctrl on every OS: Cmd+H hides the app on a Mac.
+      if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'h') {
+        e.preventDefault()
+        if (k.ambient) setAmbient(false)
+        if (voiceOpenRef.current) k.closeVoice()
+        else { setPaletteOpen(false); k.openVoice() }
+        return
+      }
       if (k.ambient) { if (!['Shift', 'Control', 'Meta', 'Alt'].includes(e.key)) setAmbient(false); return }
       if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); setPaletteOpen(o => !o); return }
       if (mod && e.key.toLowerCase() === 'l') { e.preventDefault(); k.clearConversation(); return }

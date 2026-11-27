@@ -8,14 +8,28 @@ import {
 } from '../lib/endpoints.js'
 import {
   VOICE_LANGUAGES,
+  WAKE_SENSITIVITIES,
+  FOLLOWUP_CHOICES,
   getVoiceDuplex,
   getVoiceLang,
   setVoiceDuplex,
   setVoiceLang,
+  getWakeEnabled,
+  setWakeEnabled,
+  getWakeSensitivity,
+  setWakeSensitivity,
+  getFollowupSeconds,
+  setFollowupSeconds,
+  getBeepsEnabled,
+  setBeepsEnabled,
 } from '../lib/voicePrefs.js'
+import { watchPermission, requestMediaAccess } from '../lib/mediaPermission.js'
+import { playBeep } from '../lib/beeps.js'
 import { THEMES, SCHEMES } from '../lib/themes.js'
 import { isSoundEnabled, setSoundEnabled, playChime } from '../lib/chime.js'
 import { AMBIENT_CHOICES } from '../lib/uiPrefs.js'
+
+const PERM_LABEL = { granted: 'allowed ✓', prompt: 'not yet', denied: 'blocked', unknown: '—', unavailable: 'unavailable' }
 
 function getDeviceId() {
   const match = document.cookie.match(/(?:^|;\s*)nandi_device_id=([^;]+)/)
@@ -95,6 +109,30 @@ export default function SettingsPanel({
   const [audioBase, setAudioBase] = useState(AUDIO_BASE)
   const [audioDraft, setAudioDraft] = useState(getAudioBaseOverride)
   const [audioError, setAudioError] = useState('')
+  const [wakeOn, setWakeOn] = useState(getWakeEnabled)
+  const [wakeSens, setWakeSens] = useState(getWakeSensitivity)
+  const [followup, setFollowup] = useState(getFollowupSeconds)
+  const [beeps, setBeeps] = useState(getBeepsEnabled)
+  const [micPerm, setMicPerm] = useState('unknown')
+  const [camPerm, setCamPerm] = useState('unknown')
+  const [asking, setAsking] = useState(false)
+
+  useEffect(() => {
+    const offMic = watchPermission('microphone', setMicPerm)
+    const offCam = watchPermission('camera', setCamPerm)
+    return () => { offMic(); offCam() }
+  }, [])
+
+  const askMedia = async () => {
+    setAsking(true)
+    try {
+      const r = await requestMediaAccess({ audio: micPerm !== 'granted', video: camPerm !== 'granted' })
+      if (r.microphone) setMicPerm(r.microphone)
+      if (r.camera) setCamPerm(r.camera)
+    } finally {
+      setAsking(false)
+    }
+  }
 
   useEffect(() => {
     localStorage.setItem('nandi_auto_send_stt', autoSend)
@@ -174,13 +212,78 @@ export default function SettingsPanel({
             </div>
             <div className="settings-row">
               <span className="settings-row__label">
-                Barge-in
+                Wake word “Hey Nandi”
                 <span className="settings-row__hint">
-                  Talk over Nandi to interrupt her. Turn off if your speaker is
-                  loud enough for her to interrupt herself.
+                  In voice mode (Ctrl+H) Nandi sleeps until you say “Hey Nandi” or “Hi Nandi”,
+                  like the Raspberry Pi. Off: she always listens while voice mode is on.
                 </span>
               </span>
-              <Toggle value={bargeIn} onChange={changeBargeIn} label="Barge-in" />
+              <Toggle value={wakeOn} onChange={(v) => { setWakeEnabled(v); setWakeOn(v) }} label="Wake word" />
+            </div>
+            {wakeOn && (
+              <>
+                <div className="settings-row">
+                  <label className="settings-row__label" htmlFor="settings-wake-sens">
+                    Wake sensitivity
+                    <span className="settings-row__hint">Raise it if she misses you; lower it if she wakes by herself.</span>
+                  </label>
+                  <select id="settings-wake-sens" className="settings-select" value={wakeSens}
+                    onChange={(e) => { setWakeSensitivity(e.target.value); setWakeSens(getWakeSensitivity()) }}>
+                    {WAKE_SENSITIVITIES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+                <div className="settings-row">
+                  <label className="settings-row__label" htmlFor="settings-followup">
+                    Follow-up time
+                    <span className="settings-row__hint">After she answers, keep talking without “Hey Nandi”.</span>
+                  </label>
+                  <select id="settings-followup" className="settings-select" value={followup}
+                    onChange={(e) => { setFollowupSeconds(e.target.value); setFollowup(getFollowupSeconds()) }}>
+                    {FOLLOWUP_CHOICES.map(n => <option key={n} value={n}>{n ? `${n} s` : 'None'}</option>)}
+                  </select>
+                </div>
+                <div className="settings-row">
+                  <span className="settings-row__label">Wake / sleep beeps</span>
+                  <Toggle value={beeps} onChange={(v) => { setBeepsEnabled(v); setBeeps(v); if (v) playBeep('wake') }}
+                    label="Wake and sleep beeps" />
+                </div>
+              </>
+            )}
+            {!wakeOn && (
+              <div className="settings-row">
+                <span className="settings-row__label">
+                  Barge-in
+                  <span className="settings-row__hint">
+                    Talk over Nandi to interrupt her. Turn off if your speaker is
+                    loud enough for her to interrupt herself. (With the wake word on,
+                    only “Hey Nandi” interrupts her.)
+                  </span>
+                </span>
+                <Toggle value={bargeIn} onChange={changeBargeIn} label="Barge-in" />
+              </div>
+            )}
+            <div className="settings-row settings-row--stack">
+              <span className="settings-row__label">
+                Microphone &amp; camera access
+                <span className="settings-row__hint">
+                  Your browser remembers this for this site until you clear its data — when it asks,
+                  choose “Allow while visiting the site” (Chrome/Edge) or tick “Remember this decision” (Firefox).
+                </span>
+              </span>
+              <div className="settings-perms">
+                <span className={`settings-perm settings-perm--${micPerm}`}>Microphone: {PERM_LABEL[micPerm] || micPerm}</span>
+                <span className={`settings-perm settings-perm--${camPerm}`}>Camera: {PERM_LABEL[camPerm] || camPerm}</span>
+                {(micPerm !== 'granted' || camPerm !== 'granted') && (
+                  <button className="settings-url__btn" onClick={askMedia} disabled={asking}>
+                    {asking ? 'Asking…' : 'Allow now'}
+                  </button>
+                )}
+              </div>
+              {(micPerm === 'denied' || camPerm === 'denied') && (
+                <span className="settings-url__error" role="alert">
+                  Blocked earlier: click the icon left of the address bar ▸ Site settings, and set it to Allow.
+                </span>
+              )}
             </div>
             <form
               className="settings-row settings-row--stack"

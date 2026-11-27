@@ -1566,6 +1566,19 @@ kbd {
 .voice-mode__mute:hover:not(:disabled) { color: var(--cyan); border-color: var(--cyan-edge); }
 .voice-mode__mute--on { color: var(--red); border-color: var(--red); background: var(--hover); }
 .voice-mode__send { background: var(--cyan); border-color: var(--cyan); color: var(--on-cyan); }
+/* Wake word (Pi-style phases). Asleep: a calm dot; awake: listening green; follow-up: green, softer. */
+.voice-mode--phase-sleeping .voice-mode__dot { background: var(--text-muted); box-shadow: none; animation: voice-pulse 3s ease-in-out infinite; }
+.voice-mode--phase-listen .voice-mode__dot,
+.voice-mode--phase-hearing .voice-mode__dot { background: var(--green); box-shadow: 0 0 10px var(--green); animation: none; }
+.voice-mode--phase-followup .voice-mode__dot { background: var(--green); box-shadow: 0 0 6px var(--green); opacity: 0.75; }
+.voice-mode__wake {
+  flex-shrink: 0; height: 40px; padding: 0 14px; border-radius: 20px; border: 1px solid var(--border-light);
+  background: none; color: var(--text-secondary); font: 500 13px var(--font-body); cursor: pointer;
+  transition: color var(--transition), border-color var(--transition), background var(--transition);
+}
+.voice-mode__wake:hover:not(:disabled) { color: var(--green); border-color: var(--green); }
+.voice-mode__wake:disabled { opacity: 0.4; cursor: default; }
+
 .voice-mode__mute:disabled,
 .voice-mode__send:disabled { opacity: 0.4; cursor: default; }
 .voice-mode__send:disabled { background: none; border-color: var(--border); color: var(--text-muted); }
@@ -1673,6 +1686,11 @@ kbd {
 }
 .settings-url__btn:hover:not(:disabled) { border-color: var(--cyan); }
 .settings-url__btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.settings-perms { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.settings-perm { font-size: 12.5px; color: var(--text-secondary); padding: 2px 8px; border: 1px solid var(--border); border-radius: 10px; }
+.settings-perm--granted { color: var(--green); border-color: var(--green); }
+.settings-perm--denied { color: var(--red); border-color: var(--red); }
+
 .settings-url__error { font-size: 0.8rem; color: var(--error); }
 
 @media (max-width: 640px) {

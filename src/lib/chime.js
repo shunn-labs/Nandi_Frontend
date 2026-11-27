@@ -37,6 +37,11 @@ if (typeof window !== 'undefined') {
   }
 }
 
+/** The page's shared audio context (unlocked on the first interaction), or null. */
+export function audioContext() {
+  return context()
+}
+
 export function isSoundEnabled() {
   try { return localStorage.getItem(KEY) !== 'false' } catch { return true }
 }
