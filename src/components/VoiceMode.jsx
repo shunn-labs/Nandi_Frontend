@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { VoiceSession } from '../lib/voiceSession.js'
-import { getVoiceDuplex, getVoiceLang } from '../lib/voicePrefs.js'
+import { WakeVoice, PHASE } from '../lib/wakeVoice.js'
+import {
+  VOICE_WAKE_EVENT, getBeepsEnabled, getFollowupSeconds, getVoiceDuplex, getVoiceLang, getWakeEnabled, getWakeThreshold,
+} from '../lib/voicePrefs.js'
+import { forgottenPermissionHint } from '../lib/mediaPermission.js'
 import { IconMic, IconMicOff, IconSend } from './Icons.jsx'
 import MicWave from './MicWave.jsx'
 
@@ -14,6 +17,14 @@ const STATE_LABEL = {
 }
 
 const CONNECTED = new Set(['listening', 'thinking', 'speaking'])
+
+// With the wake word on, what the panel says follows the Pi-style phase.
+const PHASE_LABEL = {
+  [PHASE.SLEEPING]: 'Say “Hey Nandi”',
+  [PHASE.LISTEN]: 'Listening',
+  [PHASE.HEARING]: 'Hearing you',
+  [PHASE.FOLLOWUP]: 'Go on…',
+}
 
 // The mic level comes from the transport (already 0..1); Nandi's is a raw RMS,
 // which runs much smaller. Nandi's level moves the core; the user's only the
@@ -41,8 +52,17 @@ function engineBadge(engines) {
   }
 }
 
-function hintFor(state, muted) {
+function hintFor(state, muted, phase, wakeReady, secondsLeft) {
   if (state === 'connecting') return 'Connecting to Nandi…'
+  if (muted && CONNECTED.has(state)) return 'Your microphone is muted.'
+  if (phase === PHASE.SLEEPING) {
+    return wakeReady === false
+      ? 'The wake word could not start here — tap Wake (or the globe) to talk.'
+      : 'Say “Hey Nandi” or “Hi Nandi” — or tap Wake. Ctrl+H ends voice mode.'
+  }
+  if (phase === PHASE.LISTEN) return 'Go ahead — Nandi is listening.'
+  if (phase === PHASE.HEARING) return ''
+  if (phase === PHASE.FOLLOWUP) return `Keep talking, no need to say “Hey Nandi”${secondsLeft ? ` (${secondsLeft}s)` : ''}.`
   if (state === 'listening') return muted ? 'Your microphone is muted.' : 'Go ahead — Nandi is listening.'
   if (state === 'thinking') return 'Nandi is thinking…'
   return ''
@@ -77,10 +97,15 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
   const [muted, setMuted] = useState(false)
   const [audioBlocked, setAudioBlocked] = useState(false)
   const [draft, setDraft] = useState('')
+  const [phase, setPhase] = useState(null)
+  const [phaseUntil, setPhaseUntil] = useState(0)
+  const [wakeReady, setWakeReady] = useState(null)
+  const [, setTick] = useState(0)
 
   const sessionRef = useRef(null)
   const audioRef = useRef(null)
   const micLevelRef = useRef(0)
+  const wakeScoreRef = useRef(0)
   // The session's callbacks are wired once; read the parent's current ones.
   const handlersRef = useRef({ onTurn, onLevel, onState, onCaption })
   handlersRef.current = { onTurn, onLevel, onState, onCaption }
@@ -109,8 +134,15 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
     setNotice('')
     setMuted(false)
     setAudioBlocked(false)
+    setPhase(null)
+    setPhaseUntil(0)
+    setWakeReady(null)
 
-    const session = new VoiceSession({
+    // The browser is about to ask for the mic again although it was allowed
+    // before (a one-time "allow", cleared data): say how to make it stick.
+    forgottenPermissionHint('microphone').then((tip) => { if (tip) setNotice(tip) })
+
+    const session = new WakeVoice({
       onState: setState,
       onUserText: setUserText,
       onBotText: setBotText,
@@ -121,7 +153,17 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
       onTurn: (turn) => handlersRef.current.onTurn?.(turn),
       onError: (err) => setError(err?.message || 'Voice mode stopped.'),
       onAudioBlocked: setAudioBlocked,
-    }, { audioElement: audioRef.current })
+      onPhase: (p, { until }) => { setPhase(p); setPhaseUntil(until || 0) },
+      onWakeReady: (ok) => setWakeReady(ok),
+      onWakeScore: (score) => { wakeScoreRef.current = score },
+      onReconnect: ({ inS }) => setNotice(`Connection lost — reconnecting in ${inS} s…`),
+    }, {
+      audioElement: audioRef.current,
+      wake: getWakeEnabled(),
+      threshold: getWakeThreshold(),
+      followupS: getFollowupSeconds(),
+      beeps: getBeepsEnabled(),
+    })
     sessionRef.current = session
     session.connect({ lang: getVoiceLang(), duplex: getVoiceDuplex() })
   }, [handleLevels])
@@ -143,6 +185,23 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
 
   const connected = CONNECTED.has(state)
 
+  // The globe (or anything) can wake voice mode, like saying "hey Nandi".
+  useEffect(() => {
+    const onWake = () => sessionRef.current?.wake()
+    window.addEventListener(VOICE_WAKE_EVENT, onWake)
+    return () => window.removeEventListener(VOICE_WAKE_EVENT, onWake)
+  }, [])
+
+  // A once-a-second tick while a timed phase (follow-up) counts down.
+  useEffect(() => {
+    if (!phaseUntil) return undefined
+    const id = setInterval(() => setTick(t => t + 1), 1000)
+    return () => clearInterval(id)
+  }, [phaseUntil])
+  const secondsLeft = phaseUntil ? Math.max(0, Math.ceil((phaseUntil - Date.now()) / 1000)) : 0
+  const wakeMode = !!sessionRef.current?.wakeEnabled
+  const canWake = wakeMode && connected && !muted && (phase === PHASE.SLEEPING || phase === PHASE.REPLYING)
+
   const toggleMute = () => {
     const next = !muted
     sessionRef.current?.setMuted(next)
@@ -155,18 +214,27 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
   }
 
   const badge = engineBadge(engines)
-  const label = connected && muted && state === 'listening' ? 'Muted' : STATE_LABEL[state] || state
-  const hint = hintFor(state, muted)
+  const label = connected && muted ? 'Muted'
+    : connected && wakeMode && PHASE_LABEL[phase] ? PHASE_LABEL[phase]
+    : STATE_LABEL[state] || state
+  const hint = hintFor(state, muted, wakeMode ? phase : null, wakeReady, secondsLeft)
+  const stateTitle = wakeMode && connected
+    ? `Wake word ${wakeReady === false ? 'unavailable' : 'on'} · last score ${wakeScoreRef.current.toFixed(2)}`
+    : undefined
 
   return (
-    <section className={`voice-mode voice-mode--${state}`} aria-label="Voice conversation with Nandi">
+    <section
+      className={`voice-mode voice-mode--${state}${wakeMode && phase ? ` voice-mode--phase-${phase}` : ''}`}
+      aria-label="Voice conversation with Nandi"
+    >
       <div className="voice-mode__head">
-        <span className="voice-mode__state" role="status" aria-live="polite">
+        <span className="voice-mode__state" role="status" aria-live="polite" title={stateTitle}>
           <span className="voice-mode__dot" aria-hidden="true" />
           {label}
         </span>
         {/* Your voice, as a sliding dotted line (the core is Nandi's). */}
-        <MicWave levelRef={micLevelRef} active={connected && !muted} className="voice-mode__wave" />
+        <MicWave levelRef={micLevelRef} active={connected && !muted && (!wakeMode || [PHASE.LISTEN, PHASE.HEARING, PHASE.FOLLOWUP].includes(phase))}
+          className="voice-mode__wave" />
         {badge && (
           <span
             className={`voice-mode__engine${badge.cloud ? ' voice-mode__engine--cloud' : ''}`}
@@ -175,7 +243,7 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
             {badge.text}
           </span>
         )}
-        <button className="voice-mode__end" onClick={onClose} title="End voice mode">
+        <button className="voice-mode__end" onClick={onClose} title="End voice mode (Ctrl+H)">
           End
         </button>
       </div>
@@ -232,6 +300,17 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
         >
           {muted ? <IconMicOff /> : <IconMic />}
         </button>
+        {wakeMode && (
+          <button
+            type="button"
+            className="voice-mode__wake"
+            onClick={() => sessionRef.current?.wake()}
+            disabled={!canWake}
+            title="Talk now, as if you said “Hey Nandi”"
+          >
+            Wake
+          </button>
+        )}
         <input
           className="voice-mode__input"
           type="text"

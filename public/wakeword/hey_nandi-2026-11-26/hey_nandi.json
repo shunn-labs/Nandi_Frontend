@@ -1,0 +1,104 @@
+{
+  "name": "hey_nandi",
+  "phrases": [
+    "hey nandi",
+    "hi nandi"
+  ],
+  "created": "2026-11-26T15:11:16",
+  "input": {
+    "name": "input",
+    "shape": [
+      1,
+      16,
+      96
+    ]
+  },
+  "output": {
+    "name": "output",
+    "shape": [
+      1,
+      1
+    ]
+  },
+  "sample_rate": 16000,
+  "frame_samples": 1280,
+  "feature_models": {
+    "melspectrogram": "shared/melspectrogram.onnx",
+    "embedding": "shared/embedding_model.onnx"
+  },
+  "threshold": 0.99,
+  "patience": 1,
+  "debounce_s": 1.5,
+  "training": {
+    "steps": 50000,
+    "layer_size": 64,
+    "model_type": "dnn",
+    "batch_mix": {
+      "ACAV100M": 1024,
+      "piper_pos": 36,
+      "piper_neg": 40,
+      "kokoro_pos": 20,
+      "kokoro_neg": 16,
+      "edge_pos": 8,
+      "edge_neg": 8,
+      "legacy_pos": 8,
+      "legacy_neg": 8,
+      "real_pos": 32,
+      "real_near_miss": 32,
+      "real_background": 32
+    },
+    "validation_positives": [
+      "real_pos"
+    ],
+    "metrics": {
+      "thr_0.3": {
+        "val_recall": 0.0,
+        "val_neg_false_rate": 0.003933566433566434,
+        "fp_windows_per_hour": 2.243782851681798
+      },
+      "thr_0.5": {
+        "val_recall": 0.0,
+        "val_neg_false_rate": 0.003933566433566434,
+        "fp_windows_per_hour": 1.4023642823011238
+      },
+      "thr_0.7": {
+        "val_recall": 0.0,
+        "val_neg_false_rate": 0.0026223776223776225,
+        "fp_windows_per_hour": 1.121891425840899
+      }
+    },
+    "acav100m_hours": 2000,
+    "minutes": 7.9,
+    "features": {
+      "kokoro_pos_train": 12000,
+      "kokoro_pos_test": 600,
+      "edge_pos_train": 2652,
+      "edge_pos_test": 38,
+      "legacy_pos_train": 922,
+      "legacy_pos_test": 113,
+      "legacy_neg_train": 1604,
+      "legacy_neg_test": 146,
+      "piper_neg_train": 15000,
+      "piper_neg_test": 1500,
+      "kokoro_neg_train": 5000,
+      "kokoro_neg_test": 500,
+      "edge_neg_train": 1722,
+      "edge_neg_test": 111,
+      "piper_pos_train": 15000,
+      "piper_pos_test": 1500,
+      "real_pos_train": 1600,
+      "real_pos_test": 20,
+      "real_near_miss_train": 280,
+      "real_near_miss_test": 31,
+      "real_background_train": 494
+    }
+  },
+  "eval": {
+    "recall": 0.9,
+    "fa_per_h": 0.0,
+    "groups": [
+      "real:phone_myroom"
+    ],
+    "date": "2026-11-26 15:15"
+  }
+}

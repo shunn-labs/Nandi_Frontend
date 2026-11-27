@@ -44,6 +44,7 @@ import { AUDIO_OFFER_URL } from './endpoints.js'
 import { audioHost } from './audioApi.js'
 import { getClientId, getDeviceName } from './clientId.js'
 import { stripEmotionTag } from './emotionTag.js'
+import { permissionState } from './mediaPermission.js'
 
 // Same public STUN as the camera streams. Without any ICE server the browser
 // offers only host candidates, which is not enough behind most NATs.
@@ -93,6 +94,8 @@ async function ensureMicPermission() {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw voiceError('mic', 'This browser cannot use the microphone on this page (it needs https).')
   }
+  // Already allowed (and remembered by the browser): no extra capture just to check.
+  if (await permissionState('microphone') === 'granted') return
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     stream.getTracks().forEach(t => t.stop())
@@ -173,6 +176,7 @@ export class VoiceSession {
    *                             shown answer when the server sent one, else what was said
    *   onError(error)            error.message is shown to the user; error.code says what kind
    *   onAudioBlocked(blocked)   the browser refused to start Nandi's audio without a tap
+   *   onUserSpeaking(speaking)  the server's VAD heard the user start (true) / stop (false)
    *
    * options.audioElement: a hidden <audio autoplay> for Nandi's voice; one is
    * created (and removed again) if it is not given.
@@ -202,6 +206,8 @@ export class VoiceSession {
     this.timer = null
     this.micLevel = 0
     this.botLevel = 0
+    this.serverMic = true      // wake-word mode closes the mic towards the server while asleep
+    this.ducked = false
     // Closing the tab must end the session on the server at once: left to the
     // peer connection timing out it would hold one of the server's few voice
     // slots for a while.
@@ -216,7 +222,7 @@ export class VoiceSession {
     return CONNECTED_STATES.has(this.state)
   }
 
-  async connect({ lang = 'auto', duplex = 'full' } = {}) {
+  async connect({ lang = 'auto', duplex = 'full', wake = null } = {}) {
     if (this.disposed || this.client) return
     const token = localStorage.getItem('user_token')
     if (!token) {
@@ -262,12 +268,13 @@ export class VoiceSession {
             device_name: getDeviceName(),
             lang,
             duplex: this.duplex,
+            ...(wake ? { wake } : {}),
           },
         },
       }), CONNECT_TIMEOUT_MS, voiceError('timeout', "The voice server didn't answer in time. Try again."))
       if (gen !== this.gen) return
 
-      if (this.muted) client.enableMic(false)
+      this._applyMic()
       this._setState(this.botSpeaking ? 'speaking' : 'listening')
     } catch (err) {
       if (gen !== this.gen || this.failed) return
@@ -292,9 +299,42 @@ export class VoiceSession {
 
   setMuted(muted) {
     this.muted = !!muted
-    if (this.client?.connected) this.client.enableMic(!this.muted)
+    this._applyMic()
     if (this.muted) this._level('mic', 0)
     return this.muted
+  }
+
+  /**
+   * Whether the server may hear the mic (wake-word mode keeps it closed while
+   * asleep and while Nandi replies). Independent of the user's own mute.
+   */
+  setServerMic(on) {
+    this.serverMic = !!on
+    this._applyMic()
+  }
+
+  _applyMic() {
+    try {
+      if (this.client?.connected) this.client.enableMic(!this.muted && this.serverMic)
+    } catch (err) {
+      console.warn('[voice] mic switch failed:', err)
+    }
+  }
+
+  /** The live local mic track (the wake-word listener clones it), or null. */
+  localMicTrack() {
+    try {
+      const track = this.client?.tracks?.()?.local?.audio
+      return track && track.readyState !== 'ended' ? track : null
+    } catch {
+      return null
+    }
+  }
+
+  /** Lower Nandi's voice (while the user says something after "hey Nandi"). */
+  duck(on) {
+    this.ducked = !!on
+    if (this.audioEl) this.audioEl.volume = on ? 0.25 : 1
   }
 
   /** Type to Nandi during the session; she answers out loud. False if it could not be sent. */
@@ -349,6 +389,7 @@ export class VoiceSession {
       // own); the bot track is measured in _startMeter instead.
       onRemoteAudioLevel: live((level) => { if (!this.meter) this._level('bot', level) }),
       onUserStartedSpeaking: live(() => this._userStarted()),
+      onUserStoppedSpeaking: live(() => this.h.onUserSpeaking?.(false)),
       onUserInput: live((d) => {
         this.sawUserInput = true
         if (!d?.input_type || d.input_type === 'transcription') this._userText(d?.text, d?.final)
@@ -370,6 +411,7 @@ export class VoiceSession {
   // ── the user ─────────────────────────────────────────────
 
   _userStarted() {
+    this.h.onUserSpeaking?.(true)
     // With barge-in the server drops the turn in progress when the user talks
     // over it; in half duplex it keeps going and this utterance waits.
     const t = this.turn
@@ -554,6 +596,7 @@ export class VoiceSession {
       this.ownAudioEl = true
     }
     this.audioEl.srcObject = stream
+    this.audioEl.volume = this.ducked ? 0.25 : 1
     const played = this.audioEl.play?.()
     played?.then?.(() => this.h.onAudioBlocked?.(false)).catch((err) => {
       if (err?.name === 'NotAllowedError') this.h.onAudioBlocked?.(true)
