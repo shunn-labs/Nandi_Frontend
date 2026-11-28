@@ -28,6 +28,8 @@ import { playBeep } from '../lib/beeps.js'
 import { THEMES, SCHEMES } from '../lib/themes.js'
 import { isSoundEnabled, setSoundEnabled, playChime } from '../lib/chime.js'
 import { AMBIENT_CHOICES } from '../lib/uiPrefs.js'
+import { isDesktop } from '../lib/desktop.js'
+import DesktopSettings from './desktop/DesktopSettings.jsx'
 
 const PERM_LABEL = { granted: 'allowed ✓', prompt: 'not yet', denied: 'blocked', unknown: '—', unavailable: 'unavailable' }
 
@@ -183,6 +185,9 @@ export default function SettingsPanel({
               <span className="settings-row__value">{getDeviceId()}</span>
             </div>
           </div>
+
+          {/* The Nandi desktop app (only inside it) */}
+          {isDesktop && <DesktopSettings />}
 
           {/* Voice */}
           <div>

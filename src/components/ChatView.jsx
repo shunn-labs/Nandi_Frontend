@@ -43,6 +43,11 @@ import {
 import { stripEmotionTag } from '../lib/emotionTag.js'
 import { micStreamId, publishMic } from '../lib/audioStreams.js'
 import { getDeviceName } from '../lib/clientId.js'
+import {
+  isDesktop, desktop, appInFront, onWindowState, onDesktopCommand, getDesktopSettings, setDesktopSetting, reportDesktopState,
+} from '../lib/desktop.js'
+import { PHASE } from '../lib/voicePhase.js'
+import DesktopPopup from './desktop/DesktopPopup.jsx'
 
 // Voice mode pulls in the Pipecat client and its WebRTC transport — the
 // biggest dependency in the app — so it is only fetched the first time
@@ -125,6 +130,17 @@ const AnswerCard = memo(function AnswerCard({ msg }) {
   )
 })
 
+// The desktop app: a clip that already played in the pop-up doesn't start
+// again when its window appears on the stage afterwards.
+const quietBoxes = new WeakMap()
+function quiet(box) {
+  if (!quietBoxes.has(box)) quietBoxes.set(box, { ...box, autoplay: false })
+  return quietBoxes.get(box)
+}
+const sameIds = (a, b) => a.size === b.size && [...a].every(x => b.has(x))
+// How long a desktop voice session that stopped with an error waits before trying again.
+const VOICE_RETRY_MS = 30000
+
 const isTyping = (el) => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
 
 /**
@@ -192,6 +208,26 @@ export default function ChatView({ onLogout }) {
   // open its state drives the core and its lines the captions.
   const [voiceOpen, setVoiceOpen] = useState(false)
   const [voiceState, setVoiceState] = useState('idle')
+  // The wake-word phase (wakeVoice.js PHASE) and what is being said, for the
+  // desktop app's pop-up and tray.
+  const [voicePhase, setVoicePhase] = useState(null)
+  const [voicePhaseUntil, setVoicePhaseUntil] = useState(0)
+  const [voiceLive, setVoiceLive] = useState({ user: '', bot: '' })
+  const [voiceProgress, setVoiceProgress] = useState('')
+  const [lastVoiceTurn, setLastVoiceTurn] = useState(null)
+  const voiceCtlRef = useRef(null)
+  const micLevelRef = useRef(0)
+  // ── Desktop app (lib/desktop.js) ───────────────────────
+  // Listening is always on unless paused (by the user, or while another app
+  // uses the mic). Until the app's settings arrive nothing starts.
+  const [desktopPaused, setDesktopPaused] = useState(null)
+  const [autoPaused, setAutoPaused] = useState(false)
+  const [appFront, setAppFront] = useState(() => !isDesktop || appInFront())
+  const [popupIds, setPopupIds] = useState(() => new Set())
+  const shownInPopupRef = useRef(new Set())
+  const pendingWakeRef = useRef(false)
+  const desktopPausedRef = useRef(null)
+  desktopPausedRef.current = desktopPaused
   // ── Live audio ─────────────────────────────────────────
   const [streamsOpen, setStreamsOpen] = useState(false)
   // This device's mic, broadcast to the audio server. Owned here so it keeps
@@ -225,6 +261,12 @@ export default function ChatView({ onLogout }) {
   // and a chat reply read out on top would talk over her.
   const voiceOpenRef = useRef(false)
   useEffect(() => { voiceOpenRef.current = voiceOpen }, [voiceOpen])
+  // In a conversation now. In a browser that is the same as voice mode being
+  // open; in the desktop app voice mode is always open, and only counts once
+  // Nandi is awake (asleep, typed replies are read out and the bar is usable).
+  const voiceEngaged = voiceOpen && (!isDesktop || (voicePhase !== null && voicePhase !== PHASE.SLEEPING))
+  const voiceEngagedRef = useRef(false)
+  useEffect(() => { voiceEngagedRef.current = voiceEngaged }, [voiceEngaged])
 
   const toast = useCallback((title, body = '', tone, action) => {
     setToasts(prev => [...prev.slice(-3), { id: `${Date.now()}-${Math.random()}`, title, body, tone, action }])
@@ -393,7 +435,7 @@ export default function ChatView({ onLogout }) {
         text: panel ? (speech || firstSentence(replyText)) : replyText, short: panel,
       }))
 
-      if (spoken.trim() && ttsEnabledRef.current && !voiceOpenRef.current) say(spoken)
+      if (spoken.trim() && ttsEnabledRef.current && !voiceEngagedRef.current) say(spoken)
     })
 
     ensureConnection()
@@ -538,9 +580,16 @@ export default function ChatView({ onLogout }) {
         // unless Nandi is already speaking (a backlog is not read out).
         // The brain sends a short `speech` line for it; an older one doesn't,
         // and then its first sentence is read.
-        if (f.action === 'notification' && ttsEnabledRef.current && !isSpeechBusy() && !voiceOpenRef.current) {
+        if (f.action === 'notification' && ttsEnabledRef.current && !isSpeechBusy() && !voiceEngagedRef.current) {
           const spoken = asText(items[0].speech).trim() || firstSentence(notes[0].body || notes[0].title, 240)
-          if (spoken) setTimeout(() => { if (!isSpeechBusy() && !voiceOpenRef.current) say(spoken) }, 900)
+          if (spoken) setTimeout(() => { if (!isSpeechBusy() && !voiceEngagedRef.current) say(spoken) }, 900)
+        }
+        // The desktop app with its window away: a system notification too.
+        if (isDesktop && f.action === 'notification' && !appInFront() && typeof Notification !== 'undefined') {
+          try {
+            const n = new Notification(notes[0].title || 'Nandi', { body: firstSentence(notes[0].body, 200), icon: '/logo.png', silent: true })
+            n.onclick = () => desktop.showMain()
+          } catch { /* notifications unavailable */ }
         }
         markNotificationsRead(notes.map(n => n.notificationId).filter(Boolean)).catch(() => {})
         break
@@ -629,6 +678,7 @@ export default function ChatView({ onLogout }) {
   const openVoice = useCallback(() => {
     if (micPhaseRef.current !== 'idle') return   // dictation has the microphone
     voiceOpenRef.current = true           // now, not after the next commit: no reply may start speaking in between
+    if (!isDesktop) voiceEngagedRef.current = true
     stopSpeech()
     setAmbient(false)
     voiceLevelRef.current = 0
@@ -638,18 +688,37 @@ export default function ChatView({ onLogout }) {
 
   const closeVoice = useCallback(() => {
     voiceOpenRef.current = false
+    voiceEngagedRef.current = false
     setVoiceOpen(false)
     setVoiceState('idle')
     voiceLevelRef.current = 0
   }, [])
+
+  // The desktop app: pausing is a setting the app keeps (tray, Ctrl+H, the top
+  // bar, `nandi --pause` all change the same one). Voice mode follows it.
+  const setListening = useCallback((on) => {
+    setDesktopPaused(!on)
+    setDesktopSetting('paused', !on)
+  }, [])
+  // End in the voice panel: in a browser it ends voice mode; in the desktop app it pauses listening.
+  const endVoice = useCallback(() => {
+    if (isDesktop) setListening(false)
+    else closeVoice()
+  }, [setListening, closeVoice])
 
   // Nandi's level only: VoiceMode keeps the user's for its own dotted wave.
   const handleVoiceLevel = useCallback((amplitude) => { voiceLevelRef.current = Math.min(1, amplitude) }, [])
 
   // What was heard and what Nandi is saying, as subtitles.
   const handleVoiceCaption = useCallback(({ user, bot }) => {
+    setVoiceLive({ user: user || '', bot: bot || '' })
     if (!user && !bot) return
     setCaption({ key: Date.now(), echo: user, text: bot, short: true })
+  }, [])
+
+  const handleVoicePhase = useCallback((phase, until) => {
+    setVoicePhase(phase)
+    setVoicePhaseUntil(until || 0)
   }, [])
 
   // A finished voice exchange. It went through the audio server's own brain
@@ -665,6 +734,7 @@ export default function ChatView({ onLogout }) {
                    isError: status === 'error', errors: [], panel: needsPanel(reply, []) })
     }
     if (added.length) setMessages(prev => [...prev, ...added])
+    setLastVoiceTurn({ at: ts, user: user || '', reply: reply || '', status })
   }, [])
 
   // ── Live audio streams ─────────────────────────────────
@@ -764,7 +834,7 @@ export default function ChatView({ onLogout }) {
 
   // A window's body. Every handler here is stable, so this function is too,
   // and a window's body is rebuilt only when its own item changes.
-  const renderContent = useCallback((item) => {
+  const renderBody = useCallback((item) => {
     const m = item.data
     switch (item.type) {
       case 'vision': return <VisionBox box={m} onCapture={handleVisionCapture} onAspect={setAspect} />
@@ -776,6 +846,21 @@ export default function ChatView({ onLogout }) {
       default: return null
     }
   }, [handleVisionCapture, handlePromptAnswer, handlePlanChange, handleStopTask, setAspect])
+
+  // On the stage. While the desktop pop-up shows a window's content, the stage
+  // shows a placeholder instead (one player, one stream at a time).
+  const renderContent = useCallback((item) => {
+    if (popupIds.has(item.id)) return <div className="stage-elsewhere">Showing in the pop-up</div>
+    if (item.type === 'vision' && item.data.autoplay && shownInPopupRef.current.has(item.id)) {
+      return renderBody({ ...item, data: quiet(item.data) })
+    }
+    return renderBody(item)
+  }, [renderBody, popupIds])
+
+  const handlePopupShowing = useCallback((ids) => {
+    ids.forEach(id => shownInPopupRef.current.add(id))
+    setPopupIds(prev => (sameIds(prev, ids) ? prev : ids))
+  }, [])
 
   // Closing a window: a vision box goes from the boxes, a card from the stage
   // (it stays in the transcript). Read through a ref so the function is stable.
@@ -807,6 +892,84 @@ export default function ChatView({ onLogout }) {
 
   // A voice-mode turn is a new turn too.
   useEffect(() => { if (voiceOpen && voiceState === 'thinking') newTurn() }, [voiceOpen, voiceState, newTurn])
+
+  // ── The desktop app ────────────────────────────────────
+  // Its settings (paused?), its commands (tray, shortcut, `nandi --wake`) and
+  // whether its window is in front (then Nandi answers here, not in the pop-up).
+  const wakeFromDesktop = useCallback(() => {
+    if (desktopPausedRef.current) {
+      pendingWakeRef.current = true
+      setDesktopPaused(false)
+      setDesktopSetting('paused', false)
+      return
+    }
+    if (voiceOpenRef.current && voiceCtlRef.current) window.dispatchEvent(new Event(VOICE_WAKE_EVENT))
+    else pendingWakeRef.current = true        // still connecting: wake as soon as it can
+  }, [])
+
+  useEffect(() => {
+    if (!isDesktop) return undefined
+    let alive = true
+    const refresh = () => getDesktopSettings().then((snap) => {
+      if (!alive || !snap) return
+      setDesktopPaused(!!snap.settings.paused)
+      setAutoPaused(!!snap.settings.pauseWhenMicBusy && !!snap.status.micBusy)
+    })
+    refresh()
+    const offCommand = onDesktopCommand((c) => {
+      switch (c?.command) {
+        case 'settings': refresh(); break
+        case 'wake': wakeFromDesktop(); break
+        case 'mic-busy': setAutoPaused(!!c.busy); break
+        case 'restart-voice': if (voiceOpenRef.current) closeVoice(); break     // the effect below opens it again
+        default:
+      }
+    })
+    const offWindow = onWindowState((st) => setAppFront(st.visible && st.focused))
+    setAppFront(appInFront())
+    return () => { alive = false; offCommand(); offWindow() }
+  }, [wakeFromDesktop, closeVoice])
+
+  // Voice mode is on whenever listening isn't paused.
+  const voiceShouldRun = isDesktop && desktopPaused === false && !autoPaused
+  useEffect(() => {
+    if (!isDesktop) return
+    if (voiceShouldRun && !voiceOpen && micPhase === 'idle') openVoice()
+    else if (!voiceShouldRun && voiceOpen) closeVoice()
+  }, [voiceShouldRun, voiceOpen, micPhase, openVoice, closeVoice])
+
+  // A wake that came while it was paused or still connecting.
+  useEffect(() => {
+    if (!pendingWakeRef.current || voicePhase !== PHASE.SLEEPING) return
+    pendingWakeRef.current = false
+    window.dispatchEvent(new Event(VOICE_WAKE_EVENT))
+  }, [voicePhase])
+
+  // Voice stopped with an error nobody sees (the panel is hidden): try again later.
+  useEffect(() => {
+    if (!isDesktop || !voiceOpen || voiceState !== 'error') return undefined
+    const t = setTimeout(() => { if (voiceOpenRef.current) closeVoice() }, VOICE_RETRY_MS)
+    return () => clearTimeout(t)
+  }, [voiceOpen, voiceState, closeVoice])
+
+  // The tray icon and the "lower other sounds" follow this.
+  useEffect(() => {
+    if (!isDesktop) return
+    reportDesktopState({
+      phase: voiceOpen ? voicePhase : null,
+      voice: voiceOpen ? voiceState : 'off',
+      paused: !!desktopPaused,
+      autoPaused: !desktopPaused && autoPaused,
+      connected,
+    })
+  }, [voiceOpen, voicePhase, voiceState, desktopPaused, autoPaused, connected])
+
+  const openAppAt = useCallback((itemId) => {
+    desktop?.showMain()
+    if (itemId) setTimeout(() => stageRef.current?.focus(itemId), 150)
+  }, [])
+  const popupSend = useCallback((text) => !!voiceCtlRef.current?.sendText(text), [])
+  const popupWake = useCallback(() => window.dispatchEvent(new Event(VOICE_WAKE_EVENT)), [])
 
   const hasItems = items.length > 0
   const narrow = useNarrow()
@@ -847,9 +1010,9 @@ export default function ChatView({ onLogout }) {
   // The core moves for Nandi only. In voice mode its connecting / thinking /
   // speaking states drive it; while the user talks (dictation, or voice mode
   // listening) it keeps whatever calm state it would otherwise show.
-  const voiceCore = voiceOpen ? VOICE_CORE[voiceState] : null
+  const voiceCore = voiceEngaged ? VOICE_CORE[voiceState] : null
   const coreState = voiceCore ? voiceCore
-    : !connected && !voiceOpen ? 'offline'
+    : !connected && !voiceEngaged ? 'offline'
     : speaking ? 'speaking'
     : promptOpen ? 'needs'
     : runningJob ? 'working'
@@ -878,7 +1041,7 @@ export default function ChatView({ onLogout }) {
   const ambientGate = useRef({})
   ambientGate.current = {
     ambient, delay: ambientDelay,
-    blocked: micPhase !== 'idle' || speaking || !!pending || promptOpen || !!runningJob || voiceOpen
+    blocked: micPhase !== 'idle' || speaking || !!pending || promptOpen || !!runningJob || voiceEngaged
       || paletteOpen || settingsOpen || consoleOpen || streamsOpen || isDragging || hasItems,
   }
   useEffect(() => {
@@ -902,7 +1065,7 @@ export default function ChatView({ onLogout }) {
   const openConsole = useCallback((tab) => { setConsoleTab(tab); setConsoleOpen(true) }, [])
   // Dictation; not during voice mode, which already has the microphone.
   const toggleMic = useCallback(() => {
-    if (!voiceOpenRef.current) chatInputRef.current?.toggleMic()
+    if (!voiceEngagedRef.current) chatInputRef.current?.toggleMic()
   }, [])
   // The globe. While Nandi talks (or is about to) a tap only stops her — the
   // next tap listens. Otherwise it toggles dictation, as the mic does. In
@@ -927,7 +1090,9 @@ export default function ChatView({ onLogout }) {
     { label: 'Logs', hint: 'L', onSelect: () => openConsole('logs') },
     { label: 'Files', onSelect: () => openConsole('files') },
     { label: 'Scheduled tasks', onSelect: () => openConsole('tasks') },
-    { label: voiceOpen ? 'End voice mode' : 'Voice mode', hint: 'Ctrl H', onSelect: voiceOpen ? closeVoice : openVoice },
+    isDesktop
+      ? { label: desktopPaused ? 'Listen for “Hey Nandi”' : 'Pause listening', hint: 'Ctrl H', onSelect: () => setListening(!!desktopPaused) }
+      : { label: voiceOpen ? 'End voice mode' : 'Voice mode', hint: 'Ctrl H', onSelect: voiceOpen ? closeVoice : openVoice },
     { label: 'Live audio', onSelect: openStreams },
     { label: vision.cameraOn ? 'Stop sharing camera' : 'Share camera', onSelect: vision.toggleCamera },
     { label: ttsEnabled ? 'Captions only' : 'Turn voice on', onSelect: () => setTts(!ttsEnabled) },
@@ -942,7 +1107,9 @@ export default function ChatView({ onLogout }) {
     { label: 'Ask Nandi', hint: '/', onSelect: () => chatInputRef.current?.focus() },
     { label: 'Talk', hint: 'hold Space', onSelect: toggleMic },
     { label: 'Stop Nandi talking', hint: 'Space', onSelect: stopSpeech },
-    { label: voiceOpen ? 'End voice mode' : 'Voice mode: say “Hey Nandi”', hint: 'Ctrl H', onSelect: voiceOpen ? closeVoice : openVoice },
+    isDesktop
+      ? { label: desktopPaused ? 'Listen for “Hey Nandi”' : 'Pause listening', hint: 'Ctrl H', onSelect: () => setListening(!!desktopPaused) }
+      : { label: voiceOpen ? 'End voice mode' : 'Voice mode: say “Hey Nandi”', hint: 'Ctrl H', onSelect: voiceOpen ? closeVoice : openVoice },
     { label: 'Open live audio streams', onSelect: openStreams },
     { label: micShare.on ? 'Stop sharing this microphone' : 'Share this microphone', onSelect: () => toggleMicShare(!micShare.on) },
     { label: 'Open settings', onSelect: () => setSettingsOpen(true) },
@@ -973,7 +1140,7 @@ export default function ChatView({ onLogout }) {
   // Read through a ref so the listener is attached once.
   const keysRef = useRef(null)
   keysRef.current = { ambient, paletteOpen, settingsOpen, speaking, clearStage, stopAllJobs, cycleTheme, clearConversation,
-                      consoleOpen, consoleTab, openVoice, closeVoice }
+                      consoleOpen, consoleTab, openVoice, closeVoice, setListening, desktopPaused }
 
   useEffect(() => {
     // Hold Space to talk: key-down starts, key-up (or leaving the window with
@@ -992,7 +1159,8 @@ export default function ChatView({ onLogout }) {
       if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'h') {
         e.preventDefault()
         if (k.ambient) setAmbient(false)
-        if (voiceOpenRef.current) k.closeVoice()
+        if (isDesktop) k.setListening(!!k.desktopPaused)
+        else if (voiceOpenRef.current) k.closeVoice()
         else { setPaletteOpen(false); k.openVoice() }
         return
       }
@@ -1028,7 +1196,7 @@ export default function ChatView({ onLogout }) {
       // focused button or link keeps Enter for itself.
       if (e.key === 'Enter' && !e.shiftKey) {
         const tag = document.activeElement?.tagName
-        if (voiceOpenRef.current || micPhaseRef.current !== 'idle' || tag === 'BUTTON' || tag === 'A') return
+        if (voiceEngagedRef.current || micPhaseRef.current !== 'idle' || tag === 'BUTTON' || tag === 'A') return
         if (chatInputRef.current?.send()) e.preventDefault()
         return
       }
@@ -1037,7 +1205,7 @@ export default function ChatView({ onLogout }) {
       // A focused button takes Space itself (the browser clicks it).
       if (e.code === 'Space' && document.activeElement?.tagName !== 'BUTTON') {
         e.preventDefault()
-        if (e.repeat || voiceOpenRef.current) return
+        if (e.repeat || voiceEngagedRef.current) return
         if (isSpeechBusy()) {
           stopSpeech()
           spaceStoppedRef.current = true
@@ -1094,7 +1262,7 @@ export default function ChatView({ onLogout }) {
     }
   }, [])
 
-  const showHint = messages.length === 0 && !hasItems && coreState === 'idle' && !voiceOpen
+  const showHint = messages.length === 0 && !hasItems && coreState === 'idle' && !voiceEngaged
   const voiceBusy = voiceOpen && (voiceState === 'thinking' || voiceState === 'speaking')
   const micNotice = micShare.on && !micShare.busy
     ? { label: 'Mic shared', title: `This device's microphone is being shared as ${micStreamId()}`, onClick: openStreams }
@@ -1104,7 +1272,10 @@ export default function ChatView({ onLogout }) {
   return (
     <div className={`screen${stageMode ? ' screen--stage' : ''}${ambient ? ' screen--ambient' : ''}`}
       onPointerDownCapture={ambient ? () => setAmbient(false) : undefined}>
-      <TopBar coreState={coreState} menuItems={menuItems} scheme={scheme} onScheme={setScheme} notice={micNotice} />
+      <TopBar coreState={coreState} menuItems={menuItems} scheme={scheme} onScheme={setScheme} notice={micNotice}
+        assistant={isDesktop && desktopPaused !== null
+          ? { listening: !desktopPaused && !autoPaused, auto: !desktopPaused && autoPaused, onToggle: () => setListening(!!desktopPaused) }
+          : undefined} />
 
       <main className="screen__main" ref={mainRef}>
         <Core state={coreState} mode={coreMode} dockRef={globeRef}
@@ -1116,7 +1287,11 @@ export default function ChatView({ onLogout }) {
 
         <section className="voice" aria-label="Nandi">
           {showHint && (
-            <p className="voice__hint" ref={hintRef}>Click the core or hold <kbd>Space</kbd> to talk · tap either to stop Nandi</p>
+            <p className="voice__hint" ref={hintRef}>
+              {isDesktop && voiceOpen
+                ? <>Say “Hey Nandi”, click the core, or hold <kbd>Space</kbd> to talk</>
+                : <>Click the core or hold <kbd>Space</kbd> to talk · tap either to stop Nandi</>}
+            </p>
           )}
           {/* Under the core while it is in the middle; in the dock otherwise. */}
           {!stageMode && <div className="voice__strip" ref={stripRef}>{jobStrip}</div>}
@@ -1126,12 +1301,14 @@ export default function ChatView({ onLogout }) {
               {voiceOpen && (
                 <Suspense fallback={<div className="voice-mode voice-mode--loading">Starting voice mode…</div>}>
                   <VoiceMode onTurn={handleVoiceTurn} onLevel={handleVoiceLevel} onState={setVoiceState}
-                    onCaption={handleVoiceCaption} onClose={closeVoice} />
+                    onCaption={handleVoiceCaption} onClose={endVoice} onPhase={handleVoicePhase}
+                    onProgress={setVoiceProgress} micLevelRef={micLevelRef} controlRef={voiceCtlRef}
+                    hidden={isDesktop && !voiceEngaged} />
                 </Suspense>
               )}
               {/* Hidden rather than unmounted during voice mode, so a half-typed
                   message and its attachments are still there afterwards. */}
-              <div className="voice__input" hidden={voiceOpen}>
+              <div className="voice__input" hidden={voiceOpen && voiceEngaged}>
                 <ChatInput ref={chatInputRef} onSend={handleSend} onMicPhase={setMicPhase} onVoiceMode={openVoice} />
               </div>
             </div>
@@ -1198,6 +1375,15 @@ export default function ChatView({ onLogout }) {
       )}
 
       {paletteOpen && <CommandPalette commands={commands} onClose={() => setPaletteOpen(false)} />}
+
+      {isDesktop && voiceOpen && (
+        <DesktopPopup
+          phase={voicePhase} voiceState={voiceState} phaseUntil={voicePhaseUntil}
+          liveUser={voiceLive.user} liveBot={voiceLive.bot} progress={voiceProgress} lastTurn={lastVoiceTurn}
+          items={items} renderBody={renderBody} micLevelRef={micLevelRef} botLevelRef={voiceLevelRef}
+          appFront={appFront} onSend={popupSend} onWake={popupWake} onOpenApp={openAppAt} onShowing={handlePopupShowing}
+        />
+      )}
 
       {isDragging && (
         <div className="drop-overlay">

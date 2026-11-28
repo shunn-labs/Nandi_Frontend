@@ -28,14 +28,9 @@ import { VoiceSession } from './voiceSession.js'
 import { WakeListener } from './wakeword/wakeListener.js'
 import { playBeep } from './beeps.js'
 
-export const PHASE = {
-  OPEN: 'open',              // no wake word: always listening
-  SLEEPING: 'sleeping',
-  LISTEN: 'listen',
-  HEARING: 'hearing',
-  REPLYING: 'replying',
-  FOLLOWUP: 'followup',
-}
+import { PHASE } from './voicePhase.js'
+
+export { PHASE }
 
 const LISTEN_S = 6           // after the wake word, how long to wait for speech
 const NOTHING_HEARD_S = 8    // the user stopped and no turn started
