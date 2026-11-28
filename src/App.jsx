@@ -6,6 +6,11 @@ import UpdateBanner from './components/UpdateBanner.jsx'
 import { getDeviceName } from './lib/clientId.js'
 import { disconnect, resetConnection } from './lib/wsAdapter.js'
 import { disconnect as disconnectVisionControl } from './lib/visionControl.js'
+import { isDesktop, desktopLoginRequest, desktopReady, reportDesktopState } from './lib/desktop.js'
+import DesktopSignIn from './components/desktop/DesktopSignIn.jsx'
+
+// Opened by the Nandi desktop app (in the system browser) just to sign in.
+const handoff = isDesktop ? null : desktopLoginRequest()
 
 function getDeviceId() {
   // Shared with clientId.js, which derives the client_id both sockets send.
@@ -51,15 +56,23 @@ export default function App() {
     setIsLoggedIn(false)
   }, [])
 
+  // The desktop app: say when the page can take commands, and whether it is signed in.
+  useEffect(() => {
+    if (!isDesktop || loading) return
+    desktopReady()
+    reportDesktopState({ signedIn: isLoggedIn && !!deviceId })
+  }, [isLoggedIn, deviceId, loading])
+
   const handleDeviceSet = useCallback((name) => {
     setDeviceIdCookie(name)
     setDeviceId(name)
   }, [])
 
   if (loading) return null
+  if (handoff) return <Login onLogin={handleLogin} handoff={handoff} />
 
   // Step 1: Login · Step 2: device setup (only if no device cookie) · Step 3: main chat view
-  const view = !isLoggedIn ? <Login onLogin={handleLogin} />
+  const view = !isLoggedIn ? (isDesktop ? <DesktopSignIn /> : <Login onLogin={handleLogin} />)
     : !deviceId ? <DeviceSetup onDeviceSet={handleDeviceSet} />
     : <ChatView deviceId={deviceId} onLogout={handleLogout} />
 

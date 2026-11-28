@@ -31,8 +31,10 @@ const SCHEME_ICON = {
  * menuItems  [{ label, hint, onSelect }]; a `null` entry draws a divider
  * notice     optional { label, title, onClick }: a pill that stays visible
  *            while something needs to be (this device's mic is being shared)
+ * assistant  optional (the desktop app): { listening, auto, onToggle } — the
+ *            "Hey Nandi" switch next to the menu
  */
-export default function TopBar({ coreState, menuItems, scheme, onScheme, notice }) {
+export default function TopBar({ coreState, menuItems, scheme, onScheme, notice, assistant }) {
   const time = useClock()
   const [open, setOpen] = useState(false)
   const menuRef = useRef(null)
@@ -72,6 +74,22 @@ export default function TopBar({ coreState, menuItems, scheme, onScheme, notice 
             </button>
           ))}
         </div>
+        {assistant && (
+          <button
+            className={`icon-btn assistant-toggle${assistant.listening ? ' assistant-toggle--on' : ''}${assistant.auto ? ' assistant-toggle--auto' : ''}`}
+            onClick={assistant.onToggle}
+            aria-pressed={assistant.listening}
+            aria-label={assistant.listening ? 'Pause listening for “Hey Nandi”' : 'Listen for “Hey Nandi”'}
+            title={assistant.auto ? 'Sleeping while another app uses the mic' : assistant.listening ? 'Listening for “Hey Nandi” (Ctrl+H pauses)' : 'Paused (Ctrl+H to listen)'}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="9" y="3" width="6" height="11" rx="3" />
+              <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+              {!assistant.listening && <path d="M4 4l16 16" />}
+            </svg>
+            {assistant.listening && !assistant.auto && <span className="assistant-toggle__dot" aria-hidden="true" />}
+          </button>
+        )}
         <button className="icon-btn" onClick={() => setOpen(o => !o)}
           aria-label="Menu" aria-expanded={open} aria-haspopup="menu">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">

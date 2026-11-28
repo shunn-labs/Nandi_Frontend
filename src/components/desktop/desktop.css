@@ -1,0 +1,23 @@
+/* ── Desktop app: sign-in and the assistant toggle (lib/desktop.js) ── */
+
+.desktop-signin__btn {
+  margin-top: 8px; display: inline-flex; align-items: center; gap: 10px;
+  height: 44px; padding: 0 22px; border-radius: 22px;
+  border: 1px solid var(--border-light); background: #131314; color: #e3e3e3;
+  font: 500 15px var(--font-body); cursor: pointer;
+}
+.desktop-signin__btn:hover { background: #1f1f20; }
+:root[data-scheme="light"] .desktop-signin__btn { background: #fff; color: #1f1f1f; border-color: #c4c7c5; }
+.desktop-signin__link {
+  margin-top: 10px; border: 0; background: none; color: var(--cyan); font: inherit; cursor: pointer; text-decoration: underline;
+}
+.desktop-signin__note { opacity: 0.8; }
+
+/* The top bar's listen / paused switch, next to the menu. */
+.assistant-toggle { position: relative; }
+.assistant-toggle--on { color: var(--cyan); }
+.assistant-toggle--auto { color: var(--needs); }
+.assistant-toggle__dot {
+  position: absolute; right: 5px; top: 5px; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--cyan); box-shadow: 0 0 6px var(--cyan);
+}

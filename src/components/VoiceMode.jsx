@@ -85,8 +85,17 @@ function hintFor(state, muted, phase, wakeReady, secondsLeft) {
  *   onState(state)                        connecting | listening | thinking | speaking | error
  *   onCaption({user, bot})                what was heard / what Nandi is saying, as it changes
  *   onClose()                             End was pressed
+ *   onPhase(phase, until)                 the wake-word phase (wakeVoice.js PHASE), null when it stops;
+ *                                         `until` = when a timed phase (follow-up) ends, ms
+ *   onProgress(text)                      what Nandi is doing ("Checking the gate camera…"), '' when nothing
+ *   micLevelRef                           optional ref that also gets the user's mic level (0..1)
+ *   controlRef                            optional ref filled with { wake(), sendText(text) }
+ *   hidden                                keep the conversation, don't draw the panel (desktop app,
+ *                                         while asleep or while the pop-up shows it)
  */
-export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose }) {
+export default function VoiceMode({
+  onTurn, onLevel, onState, onCaption, onClose, onPhase, onProgress, micLevelRef: outerMicRef, controlRef, hidden = false,
+}) {
   const [state, setState] = useState('connecting')
   const [error, setError] = useState('')
   const [userText, setUserText] = useState('')
@@ -107,8 +116,10 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
   const micLevelRef = useRef(0)
   const wakeScoreRef = useRef(0)
   // The session's callbacks are wired once; read the parent's current ones.
-  const handlersRef = useRef({ onTurn, onLevel, onState, onCaption })
-  handlersRef.current = { onTurn, onLevel, onState, onCaption }
+  const handlersRef = useRef({ onTurn, onLevel, onState, onCaption, onPhase, onProgress })
+  handlersRef.current = { onTurn, onLevel, onState, onCaption, onPhase, onProgress }
+  const outerMicRefRef = useRef(outerMicRef)
+  outerMicRefRef.current = outerMicRef
 
   useEffect(() => { handlersRef.current.onState?.(state) }, [state])
   useEffect(() => { handlersRef.current.onCaption?.({ user: userText, bot: botText }) }, [userText, botText])
@@ -120,6 +131,7 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
 
   const handleLevels = useCallback(({ mic, bot }) => {
     micLevelRef.current = Math.min(1, (mic || 0) * MIC_GAIN)
+    if (outerMicRefRef.current) outerMicRefRef.current.current = micLevelRef.current
     handlersRef.current.onLevel?.(Math.min(1, (bot || 0) * BOT_GAIN))
   }, [])
 
@@ -146,14 +158,18 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
       onState: setState,
       onUserText: setUserText,
       onBotText: setBotText,
-      onProgress: setProgress,
+      onProgress: (t) => { setProgress(t); handlersRef.current.onProgress?.(t) },
       onEngines: setEngines,
       onNotice: setNotice,
       onLevels: handleLevels,
       onTurn: (turn) => handlersRef.current.onTurn?.(turn),
       onError: (err) => setError(err?.message || 'Voice mode stopped.'),
       onAudioBlocked: setAudioBlocked,
-      onPhase: (p, { until }) => { setPhase(p); setPhaseUntil(until || 0) },
+      onPhase: (p, { until }) => {
+        setPhase(p)
+        setPhaseUntil(until || 0)
+        handlersRef.current.onPhase?.(p, until || 0)
+      },
       onWakeReady: (ok) => setWakeReady(ok),
       onWakeScore: (score) => { wakeScoreRef.current = score },
       onReconnect: ({ inS }) => setNotice(`Connection lost — reconnecting in ${inS} s…`),
@@ -180,8 +196,21 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
       sessionRef.current = null
       handlersRef.current.onLevel?.(0)
       handlersRef.current.onState?.('idle')
+      handlersRef.current.onPhase?.(null, 0)
+      handlersRef.current.onProgress?.('')
+      if (outerMicRefRef.current) outerMicRefRef.current.current = 0
     }
   }, [start])
+
+  // Others (the desktop pop-up) can wake Nandi and type to her.
+  useEffect(() => {
+    if (!controlRef) return undefined
+    controlRef.current = {
+      wake: () => sessionRef.current?.wake(),
+      sendText: (text) => !!sessionRef.current?.sendText(text),
+    }
+    return () => { controlRef.current = null }
+  }, [controlRef])
 
   const connected = CONNECTED.has(state)
 
@@ -226,6 +255,7 @@ export default function VoiceMode({ onTurn, onLevel, onState, onCaption, onClose
     <section
       className={`voice-mode voice-mode--${state}${wakeMode && phase ? ` voice-mode--phase-${phase}` : ''}`}
       aria-label="Voice conversation with Nandi"
+      hidden={hidden}
     >
       <div className="voice-mode__head">
         <span className="voice-mode__state" role="status" aria-live="polite" title={stateTitle}>

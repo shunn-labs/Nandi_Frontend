@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { getApiBaseUrl } from '../lib/wsAdapter.js'
+import { desktopLoginUrl } from '../lib/desktop.js'
 
 const GOOGLE_CLIENT_ID =
   import.meta.env.VITE_GOOGLE_CLIENT_ID ||
@@ -14,9 +15,15 @@ const GOOGLE_CLIENT_ID =
 const GIS_POLL_MS = 100
 const GIS_TIMEOUT_MS = 10000
 
-export default function Login({ onLogin }) {
+/**
+ * handoff  { port, state } when the Nandi desktop app opened this page in the
+ *          system browser to sign in (lib/desktop.js): the token goes to the
+ *          app on 127.0.0.1 instead of into this browser.
+ */
+export default function Login({ onLogin, handoff = null }) {
   const [status, setStatus] = useState('loading')   // loading | ready | unavailable
   const [error, setError] = useState('')
+  const [handedOff, setHandedOff] = useState(false)
   const buttonRef = useRef(null)
 
   useEffect(() => {
@@ -49,6 +56,12 @@ export default function Login({ onLogin }) {
 
         if (!data.access_token) {
           setError('Sign-in succeeded but no token was returned.')
+          return
+        }
+
+        if (handoff) {
+          setHandedOff(true)
+          window.location.replace(desktopLoginUrl(handoff, data.access_token))
           return
         }
 
@@ -96,13 +109,16 @@ export default function Login({ onLogin }) {
       cancelled = true
       if (timer) clearTimeout(timer)
     }
-  }, [onLogin])
+  }, [onLogin, handoff])
 
   return (
     <div className="login-page">
       <img src="/logo.png" alt="Nandi AI" className="login-page__logo" />
       <h1 className="login-page__title">NANDI AI</h1>
-      <p className="login-page__subtitle">Your Personal AI Assistant</p>
+      <p className="login-page__subtitle">
+        {handoff ? 'Sign in to Nandi for your desktop' : 'Your Personal AI Assistant'}
+      </p>
+      {handedOff && <p className="login-page__hint">Signed in. Going back to the Nandi app…</p>}
 
       <div className="login-page__btn-wrap" ref={buttonRef} id="g-signin-btn" />
 
